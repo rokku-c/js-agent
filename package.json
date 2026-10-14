@@ -1,0 +1,25 @@
+{
+  "name": "js-agent",
+  "version": "0.1.0",
+  "description": "An agent runtime that runs inside an operating system it mounts itself. Nothing is ambient: files, the network and the model are all mounts.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "js-agent": "./bin/js-agent"
+  },
+  "exports": {
+    ".": "./bootstrap.js",
+    "./kernel": "./src/kernel/vfs.js"
+  },
+  "scripts": {
+    "test": "node --test test/unit.test.js test/vfs.test.js test/shell.test.js test/ai.test.js test/core.test.js test/agent.test.js test/airgap.test.js",
+    "test:all": "node test/run.js",
+    "test:e2e": "node test/run.js e2e",
+    "start": "node bin/js-agent"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

@@ -1,0 +1,8 @@
+#!/usr/bin/env node
+// the entry point. all of it is in bootstrap.js, so that the OS can also be booted by
+// another program — a test, a subagent, or an embedder — without going through argv.
+
+import { boot } from "../bootstrap.js";
+
+const { code } = await boot();
+process.exitCode = code ?? 0;
