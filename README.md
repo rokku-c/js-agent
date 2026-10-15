@@ -1,5 +1,7 @@
 # js-agent
 
+> **Architecture documentation:** [docs/README.md](./docs/README.md)
+
 An agent runtime that runs inside an operating system it mounts itself.
 
 ```bash
