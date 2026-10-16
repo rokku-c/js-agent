@@ -72,6 +72,9 @@ export function createView(resources, { grants = [] } = {}) {
   const policy = parent ? intersect(requested, parent) : requested;
   const allows = (op, path) => policy.some((g) => g.operations.includes(op) && matches(g, path));
   const check = (op, path) => {
+    if (typeof path !== "string") {
+      throw new VfsError("EINVAL", "resource paths must be strings", { operation: op });
+    }
     const abs = normalize(path);
     if (!allows(op, abs)) {
       throw new VfsError("EACCES", "operation is outside this view", { path: abs, operation: op });

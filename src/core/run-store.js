@@ -33,7 +33,8 @@ function json(value, path) {
 }
 
 function pathJoin(root, id, file = "") {
-  return `${root}/${id}${file ? `/${file}` : ""}`;
+  const base = root === "/" ? "" : root;
+  return `${base}/${id}${file ? `/${file}` : ""}`;
 }
 
 function failureRecord(e) {

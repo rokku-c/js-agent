@@ -130,8 +130,12 @@ async function sha256(bytes) {
   return `sha256:${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
-function checkMaxBytes(bytes, maxBytes) {
+function validateMaxBytes(maxBytes) {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw fail("maxBytes must be a non-negative safe integer");
+}
+
+function checkMaxBytes(bytes, maxBytes) {
+  validateMaxBytes(maxBytes);
   if (bytes.byteLength > maxBytes) {
     const error = fail(`materialized reference exceeds maxBytes (${bytes.byteLength} > ${maxBytes})`, "EOVERFLOW");
     throw error;
@@ -147,6 +151,7 @@ export async function resolveReference(resources, ref, { maxBytes = DEFAULT_MAX_
   checkSignal(signal);
   if (!resources || typeof resources.read !== "function") throw fail("resources must provide read(path, options)");
   const parsed = parseReference(ref);
+  validateMaxBytes(maxBytes);
   checkSignal(signal);
 
   // The facade is the only access path. In particular, do not inspect or unwrap it.
