@@ -224,7 +224,13 @@ async function inspectRaw(storage, graphId, { root = "/workflows" } = {}) {
  */
 export async function inspectWorkflowGraph(storage, graphId, options = {}) {
   if (!storage || typeof storage.read !== "function") throw fail("workflow graph requires storage.read", "EINVAL");
-  return inspectRaw(storage, graphId, options);
+  object(options, "workflow graph inspection options");
+  const inspectionRoot = options.root === undefined ? "/workflows" : options.root;
+  if (typeof inspectionRoot !== "string" || !inspectionRoot.startsWith("/")
+    || inspectionRoot.includes("//") || inspectionRoot.split("/").includes("..")) {
+    throw fail("workflow graph root must be an absolute path", "EINVAL");
+  }
+  return inspectRaw(storage, graphId, { ...options, root: normalize(inspectionRoot) });
 }
 
 /**
@@ -289,7 +295,11 @@ export function createWorkflowGraph({ storage, store, root = "/workflows", persi
 
   async function save(state) {
     state.updated = now();
-    if (hasJournal(state) || (persistence === "journal" && state.nodes.length === 0)) {
+    // Selecting journal for an existing v1 graph performs an explicit, atomic
+    // format migration at the next mutation. Once a graph has a journal, keep
+    // using it even if a caller reopens it with the snapshot default.
+    if (hasJournal(state) || persistence === "journal") {
+      if (typeof storage.mkdirp !== "function") throw fail("workflow graph requires storage.mkdirp()", "ENOTSUP");
       await writeGraphJournal(storage, state, (path, value) => writeSnapshot(storage, path, value, durable));
     } else {
       await writeSnapshot(storage, `${state.path}/graph.json`, state, durable);
@@ -303,6 +313,9 @@ export function createWorkflowGraph({ storage, store, root = "/workflows", persi
     return locked(graphId, async () => {
       if (typeof storage.exists === "function" && await storage.exists(path)) {
         throw fail(`workflow graph already exists: ${graphId}`, "EEXIST");
+      }
+      if (typeof storage.mkdirp !== "function" || typeof storage.mkdir !== "function") {
+        throw fail("workflow graph creation requires storage.mkdirp() and storage.mkdir()", "ENOTSUP");
       }
       await storage.mkdirp(root);
       await storage.mkdir(path, { exclusive: true });

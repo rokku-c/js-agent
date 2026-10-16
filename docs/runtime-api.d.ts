@@ -24,6 +24,13 @@ export interface ResourceAdapter {
   exists?(path: string, options?: unknown): Promise<boolean>;
   watch?(path: string, options?: unknown): AsyncIterable<unknown>;
   capabilities?(path: string): Record<string, boolean>;
+  sync?(path: string): Promise<unknown>;
+}
+
+/** Storage methods required by workflow graph creation. */
+export interface WorkflowGraphStorage extends ResourceAdapter {
+  mkdir(path: string, options?: unknown): Promise<unknown>;
+  mkdirp(path: string, options?: unknown): Promise<unknown>;
 }
 
 export interface Grant {
@@ -43,10 +50,13 @@ export interface ServiceAuthority {
   describe(): { grants: string[] };
 }
 
+export type ServiceHandler = (input: unknown, options?: { signal?: AbortSignal; [key: string]: unknown }) => unknown | Promise<unknown>;
+export type ServiceRegistry = Record<string, ServiceHandler>;
+
 export interface RunStore {
   readonly root: string;
   readonly mode: "volatile" | "durable";
-  reserve(id?: string): Promise<{ id: string; path: string; status: "reserved" }>;
+  reserve(id?: string, value?: { request?: unknown; plan?: unknown }): Promise<{ id: string; path: string; status: "reserved" }>;
   materialize(id: string, value: { request: unknown; plan: unknown }): Promise<Record<string, unknown>>;
   start(id: string): Promise<Record<string, unknown>>;
   finish(id: string, response: unknown, toolCalls?: unknown[]): Promise<Record<string, unknown>>;
@@ -73,6 +83,7 @@ export interface RunSnapshot {
   files: { status: "present" | "missing" | "unavailable"; events: "present" | "missing" | "unavailable" };
   partial: boolean;
   issue?: string;
+  /** Observation is always best effort, including for a durable writer. */
   volatile: true;
   redacted: true;
 }
@@ -93,8 +104,13 @@ export interface AgentSpec {
 }
 
 export interface ModelAdapter {
-  path?: string;
   request(request: Record<string, unknown>, options?: { signal?: AbortSignal; resources?: ResourceView; services?: ServiceAuthority }): Promise<Record<string, unknown>>;
+}
+
+export interface ModelConfiguration {
+  path: string;
+  adapter: ModelAdapter | ((request: Record<string, unknown>, options?: { signal?: AbortSignal; resources?: ResourceView; services?: ServiceAuthority }) => Promise<Record<string, unknown>> | Record<string, unknown>);
+  serviceGrants?: string[];
 }
 
 export interface ToolAdapter {
@@ -108,7 +124,7 @@ export interface Environment {
   readonly store: RunStore;
   run(options?: { agent?: AgentSpec | string; input?: string; id?: string; continuationId?: string; signal?: AbortSignal; [key: string]: unknown }): Promise<Record<string, unknown>>;
   prepareWorkflow(options?: Record<string, unknown>): Promise<Record<string, unknown>>;
-  createWorkflowGraph(options?: Record<string, unknown>): WorkflowGraph;
+  createWorkflowGraph(options?: WorkflowGraphOptions): WorkflowGraph;
   recoverWorkflow(graph: WorkflowGraph, graphId: string, options?: { takeover?: boolean }): Promise<Record<string, unknown>>;
   catalog(): Promise<Array<Record<string, unknown>>>;
   discoverTools(path?: string): Promise<Array<Record<string, unknown>>>;
@@ -118,20 +134,28 @@ export interface Environment {
   describe(): Record<string, unknown>;
 }
 
+export interface WorkflowGraphOptions {
+  root?: string;
+  persistence?: "snapshot" | "journal";
+  lockTimeoutMs?: number;
+}
+
 export interface WorkflowGraph {
   readonly root: string;
   startRoot(options?: Record<string, unknown>): Promise<Record<string, unknown>>;
   continueBranch(options?: Record<string, unknown>): Promise<Record<string, unknown>>;
+  run(options?: { id: string; root: Record<string, unknown>; branches?: Array<Record<string, unknown>> }): Promise<Record<string, unknown>>;
+  close(graphId: string): Promise<Record<string, unknown>>;
   inspect(graphId: string): Promise<Record<string, unknown>>;
   recover(graphId: string): Promise<Record<string, unknown>>;
-  cancel(graphId: string): Promise<Record<string, unknown>>;
+  cancel(graphId: string, reason?: unknown): Promise<Record<string, unknown>>;
 }
 
 export declare function createView(resources: ResourceAdapter, options?: { grants?: Grant[] }): ResourceView;
 export declare function resolveReference(resources: ResourceAdapter, reference: unknown, options?: Record<string, unknown>): Promise<Record<string, unknown>>;
 export declare function resolveArguments(resources: ResourceAdapter, input: unknown, options?: Record<string, unknown>): Promise<unknown>;
 export declare function createRunStore(storage: ResourceAdapter, options?: { root?: string; mode?: "volatile" | "durable"; lockTimeoutMs?: number }): RunStore;
-export declare function createRunObserver(storage: ResourceAdapter, options?: { root?: string; interval?: number }): RunObserver;
+export declare function createRunObserver(storage: ResourceAdapter, options?: { root?: string; interval?: number; concurrency?: number }): RunObserver;
 export declare function invokeOnce(options?: Record<string, unknown>): Promise<Record<string, unknown>>;
 export declare function buildContinuation(options?: Record<string, unknown>): Readonly<{ messages: unknown[] }>;
 export declare function bindToolResource(resources: ResourceAdapter, path: string, options?: Record<string, unknown>): Promise<Record<string, unknown>>;
@@ -144,12 +168,26 @@ export declare class InMemoryConnector {
   [key: string]: unknown;
 }
 export declare function createInMemoryConnector(options?: Record<string, unknown>): InMemoryConnector;
-export declare function createServiceAuthority(services?: Record<string, (input: unknown, options?: unknown) => unknown>, options?: { grants?: string[] }): ServiceAuthority;
+export declare function createServiceAuthority(services?: ServiceRegistry | ServiceAuthority, options?: { grants?: string[] }): ServiceAuthority;
 export declare function createGitRevisionConnector(options?: Record<string, unknown>): Promise<Record<string, unknown>>;
 export declare function executeToolCalls(toolCalls: unknown[], adapters: Map<string, Function> | Record<string, Function>, options?: Record<string, unknown>): Promise<unknown[]>;
 export declare function inspectInvocation(storage: ResourceAdapter, pathOrId: string, options?: { root?: string }): Promise<Record<string, unknown>>;
 export declare function runWorkflow(options?: Record<string, unknown>): Promise<Record<string, unknown>>;
-export declare function createEnvironment(options: { resources: ResourceAdapter; storage?: ResourceAdapter; store?: RunStore; root?: string; model: ModelAdapter; tools?: { paths?: string[]; adapters?: ToolAdapter[]; root?: string }; permissions?: { agent?: Grant[]; model?: Grant[]; tools?: Grant[]; observer?: Grant[] }; services?: ServiceAuthority | Record<string, Function>; observerInterval?: number }): Environment;
-export declare function createWorkflowGraph(options: { storage: ResourceAdapter; store: RunStore; root?: string }): WorkflowGraph;
-export declare function inspectWorkflowGraph(storage: ResourceAdapter, graphId: string, options?: Record<string, unknown>): Promise<Record<string, unknown>>;
+
+export interface EnvironmentOptions {
+  resources: ResourceAdapter;
+  storage?: ResourceAdapter;
+  store?: RunStore;
+  root?: string;
+  graphRoot?: string;
+  model: ModelConfiguration;
+  tools?: { paths?: string[]; adapters?: ToolAdapter[]; root?: string };
+  permissions?: { agent?: Grant[]; model?: Grant[]; tools?: Grant[]; observer?: Grant[] };
+  services?: ServiceAuthority | ServiceRegistry;
+  observerInterval?: number;
+}
+
+export declare function createEnvironment(options: EnvironmentOptions): Environment;
+export declare function createWorkflowGraph(options: { storage: WorkflowGraphStorage; store: RunStore } & WorkflowGraphOptions): WorkflowGraph;
+export declare function inspectWorkflowGraph(storage: Pick<ResourceAdapter, "read">, graphId: string, options?: { root?: string }): Promise<Record<string, unknown>>;
 export declare function consumeModelStream(events: AsyncIterable<unknown> | Iterable<unknown>, options?: { onEvent?: (event: unknown) => unknown; signal?: AbortSignal }): Promise<Record<string, unknown>>;

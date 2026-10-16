@@ -138,7 +138,10 @@ concurrent branches, joins, keyed continuation deduplication, aggregate cancella
 restart inspection. Snapshot persistence remains the default. Opt into
 `createWorkflowGraph({ storage, store, persistence: "journal" })` to record changed nodes
 and edges in an append journal with an atomic commit pointer. Existing snapshots and
-journals are detected on read. With a durable RunStore, graph mutations use a filesystem
+journals are detected on read. Selecting journal for an existing v1 snapshot migrates it on
+its next mutation; reopening a journal with the snapshot default keeps the journal format.
+There is no automatic compaction or downgrade, so older runtimes cannot read a migrated graph.
+With a durable RunStore, graph mutations use a filesystem
 writer lock and flushed atomic writes; a stale lock fails with `EBUSY` rather than being
 stolen. External effects remain `unknown` when recovery cannot establish their outcome.
 See [the journal benchmark report](../WORKFLOW-GRAPH-JOURNAL-REPORT.md) for measurements,

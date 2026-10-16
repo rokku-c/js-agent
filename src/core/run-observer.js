@@ -144,6 +144,8 @@ function consistency(status, events, eventState) {
 function signature(snapshot) {
   return JSON.stringify([
     snapshot.status,
+    snapshot.storage ?? null,
+    snapshot.issue ?? null,
     snapshot.partial,
     snapshot.sequence,
     snapshot.events,

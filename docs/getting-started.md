@@ -25,8 +25,10 @@ metadata without request, plan, response, or tool payloads.
 
 The next API layers are also public from `js-agent/runtime`:
 
-- `environment.createWorkflowGraph({ root })` coordinates a root invocation and keyed
-  continuation branches using the Environment's storage and RunStore. See [the graph example](../examples/workflow-graph.js).
+- `environment.createWorkflowGraph({ root, persistence })` coordinates a root invocation and keyed
+  continuation branches using the Environment's storage and RunStore. `persistence` is
+  `"snapshot"` by default; choose `"journal"` when graph write volume is the constraint.
+  See [the graph example](../examples/workflow-graph.js) and the [persistence conformance example](../examples/workflow-persistence.js).
   The standalone `createWorkflowGraph({ storage, store })` remains available for lower-level composition.
 - `createGitRevisionConnector({ repository, stateDir })` manages candidate worktrees, checks,
   candidate invocations, and compare-and-swap activation. Its callback receives captured
@@ -83,6 +85,13 @@ persistence has its own commit protocol.
 an atomic commit pointer. Stale graph locks fail
 with `EBUSY`; missing/corrupt graphs still require application handling. The examples test
 process loss, not power-loss durability.
+
+Graph persistence is selected when a coordinator is opened. A v1 snapshot opened with
+`persistence: "journal"` is migrated on its next graph mutation; the migration publishes a
+journal commit pointer and keeps the old graph state readable until that commit succeeds. A
+journal graph remains journaled when reopened with the snapshot default. There is no automatic
+compaction or downgrade, and older runtimes that only understand v1 cannot read the migrated
+format.
 
 Observers and permissions are distinct: redaction removes payloads from returned snapshots,
 but a broad `/runs/**` read grant still authorizes raw payload reads on that View. The example
