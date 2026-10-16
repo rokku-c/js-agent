@@ -33,7 +33,7 @@ test("invocation performs one request and persists its frozen materialization", 
   const fake = modelSpy({ content: [{ type: "tool_use", id: "t1", name: "read", input: {} }] });
   const result = await invokeOnce({ resources, agent, input: "inspect", model: fake.adapter, tools, store, id: "one" });
 
-  assert.equal(result.status, "completed");
+  assert.equal(result.status, "completed_with_tool_calls");
   assert.deepEqual(result.toolCalls[0].name, "read");
   assert.equal(fake.calls.length, 1);
   assert.equal(fake.calls[0].request.messages[0].content, "inspect\n\n[context /context]\nknown fact");
@@ -42,7 +42,7 @@ test("invocation performs one request and persists its frozen materialization", 
   const events = (await vfs.read("/runs/one/events.jsonl")).trim().split("\n").map(JSON.parse);
   assert.deepEqual(events.map((event) => event.kind), ["started", "completed"]);
   assert.deepEqual(events.map((event) => event.seq), [1, 2]);
-  assert.match(await vfs.read("/runs/one/status.json"), /"status": "completed"/);
+  assert.match(await vfs.read("/runs/one/status.json"), /"status": "completed_with_tool_calls"/);
   assert.deepEqual(JSON.parse(await vfs.read("/runs/one/response.json")), { content: [{ type: "tool_use", id: "t1", name: "read", input: {} }] });
 });
 
@@ -180,4 +180,30 @@ test("store write APIs validate ownership and terminal transitions", async () =>
   await assert.rejects(() => store.finish("guarded", { content: [] }), (error) => error.code === "EALREADY");
   await assert.rejects(() => store.fail("guarded", "unknown", new Error("late")), (error) => error.code === "EALREADY");
   assert.equal((await store.readStatus("guarded")).status, "completed");
+});
+
+test("cancellation during reference admission is recorded as cancelled", async () => {
+  const { vfs, store } = await setup();
+  const controller = new AbortController();
+  const resources = {
+    async read(path) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      controller.abort();
+      return path === "/context" ? "late" : JSON.stringify({ model: "/models/default", context: ["/context"] });
+    },
+  };
+  let called = false;
+  const result = await invokeOnce({
+    resources,
+    agent: "/agent.json",
+    input: "x",
+    model: { path: "/models/default", request() { called = true; } },
+    store,
+    signal: controller.signal,
+    id: "admission-cancelled",
+  });
+  assert.equal(result.status, "cancelled");
+  assert.equal(called, false);
+  assert.equal((await store.readStatus("admission-cancelled")).status, "cancelled");
+  assert.match(await vfs.read("/runs/admission-cancelled/events.jsonl"), /cancelled/);
 });
