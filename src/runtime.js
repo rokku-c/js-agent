@@ -2,6 +2,7 @@
 export { createView } from './kernel/view.js';
 export { resolveReference, resolveArguments } from './core/references.js';
 export { createRunStore } from './core/run-store.js';
+export { createRunObserver } from './core/run-observer.js';
 export { invokeOnce } from './core/invocation.js';
 
 export { buildContinuation } from './core/continuation.js';

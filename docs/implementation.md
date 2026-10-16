@@ -14,6 +14,7 @@ independent: callers can use a resource View or reference resolver without runni
 | `resolveReference(resources, ref)` | Read a text reference, select lines, record hashes | Exact paths, live reads, SHA-256 content assertions; no Git snapshots or search selectors |
 | `resolveArguments(resources, input)` | Resolve explicit `$ref` objects inside arguments | Ordinary strings remain literal; `$literal` escapes structured data |
 | `createRunStore(storage)` | Record request, materialized plan, response, status and events | Volatile milestone; atomic rename is not an fsync or distributed transaction guarantee |
+| `createRunObserver(storage)` | Read redacted status/event metadata for concurrent UI or Agent observation | Polling, best-effort and explicitly volatile; payload files are not exposed |
 | `invokeOnce(options)` | Resolve a simple AgentSpec and dispatch exactly one model request | No tool execution, retries, session, or continuation scheduler |
 | `loadToolDefinition(resources, path)` | Load and validate a resource-backed tool definition | Metadata only; `entry.js` is never executed |
 | `buildContinuation(options)` | Build the next canonical request tail from one response and a complete tool batch | Pure builder; no model call or tool execution |

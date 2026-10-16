@@ -4,6 +4,7 @@ import { Vfs } from "../src/kernel/vfs.js";
 import { createView } from "../src/kernel/view.js";
 import { resolveReference } from "../src/core/references.js";
 import { createRunStore } from "../src/core/run-store.js";
+import { createRunObserver } from "../src/core/run-observer.js";
 import { invokeOnce } from "../src/core/invocation.js";
 
 const encoder = new TextEncoder();
@@ -244,4 +245,113 @@ test("adversarial RunState exposes a partial terminal write as an error", async 
   assert.equal(result.status, "unknown");
   assert.equal(store.lastError("partial-status").code, "EIO");
   assert.equal((await store.readStatus("partial-status")).status, "started", "volatile storage cannot promise a terminal snapshot after a failed write");
+});
+
+test("adversarial RunState observer consumes concurrent terminal outcomes without payload leakage", async () => {
+  const vfs = new Vfs();
+  await vfs.mount("mem", "/");
+  const store = createRunStore(vfs);
+  const observer = createRunObserver(vfs, { interval: 1 });
+  const secret = "observer-secret-should-never-cross";
+  for (const id of ["failed-run", "unknown-run", "cancelled-run"]) {
+    await store.reserve(id, {
+      request: { messages: [{ content: secret }] },
+      plan: { credentials: secret },
+    });
+    await store.start(id);
+  }
+
+  const streams = ["failed-run", "unknown-run", "cancelled-run"].map((id) => observer.watch(id));
+  const initial = await Promise.all(streams.map((stream) => stream.next()));
+  assert.deepEqual(initial.map((step) => step.value.status), ["started", "started", "started"]);
+
+  await Promise.all([
+    store.fail("failed-run", "failed", error(`failure contains ${secret}`, "EIO")),
+    store.fail("unknown-run", "unknown", error(`disconnect contains ${secret}`, "EIO")),
+    store.fail("cancelled-run", "cancelled", error(`cancel contains ${secret}`, "ABORT_ERR")),
+  ]);
+
+  const terminal = await Promise.all(streams.map(async (stream) => {
+    let step;
+    do step = await stream.next(); while (!step.done && !step.value.terminal);
+    return step.value;
+  }));
+  assert.deepEqual(terminal.map((snapshot) => snapshot.status), ["failed", "unknown", "cancelled"]);
+  for (const snapshot of terminal) {
+    assert.equal(snapshot.partial, false);
+    assert.deepEqual(snapshot.events.map(({ seq, kind, at }) => ({ seq, kind, at })), [
+      { seq: 1, kind: "started", at: snapshot.events[0].at },
+      { seq: 2, kind: snapshot.status, at: snapshot.events[1].at },
+    ]);
+    const serialized = JSON.stringify(snapshot);
+    assert.doesNotMatch(serialized, /observer-secret-should-never-cross/);
+    assert.doesNotMatch(serialized, /error|message|credentials|toolCalls|request|plan|response/i);
+    assert.equal("request" in snapshot, false);
+    assert.equal("plan" in snapshot, false);
+    assert.equal("response" in snapshot, false);
+  }
+
+  const listed = await observer.list();
+  assert.deepEqual(listed.map(({ id }) => id), ["cancelled-run", "failed-run", "unknown-run"]);
+});
+
+test("adversarial RunState observer reports partial volatile persistence and redacts malformed tails", async () => {
+  const vfs = new Vfs();
+  await vfs.mount("mem", "/");
+  const originalWrite = vfs.write.bind(vfs);
+  let failTerminalStatus = false;
+  const flaky = {
+    mkdirp: vfs.mkdirp.bind(vfs),
+    mkdir: vfs.mkdir.bind(vfs),
+    rename: vfs.rename.bind(vfs),
+    read: vfs.read.bind(vfs),
+    stat: vfs.stat.bind(vfs),
+    list: vfs.list.bind(vfs),
+    async write(path, data, options) {
+      if (failTerminalStatus && path.includes("/status.json.tmp-")) {
+        failTerminalStatus = false;
+        throw error("status persistence contains a secret backend detail", "EIO");
+      }
+      return originalWrite(path, data, options);
+    },
+  };
+  const store = createRunStore(flaky);
+  const observer = createRunObserver(flaky, { interval: 1 });
+  await store.reserve("partial-observed", { request: { secret: "hidden" }, plan: {} });
+  await store.start("partial-observed");
+  failTerminalStatus = true;
+  await store.fail("partial-observed", "unknown", error("provider token hidden", "EIO"));
+
+  const partial = await observer.snapshot("partial-observed");
+  assert.equal(partial.status, "started", "volatile observers see the last persisted status");
+  assert.equal(partial.terminal, false);
+  assert.equal(partial.partial, true, "the event/status mismatch is observable as partial state");
+  assert.deepEqual(partial.events.map(({ seq, kind }) => ({ seq, kind })), [
+    { seq: 1, kind: "started" },
+    { seq: 2, kind: "unknown" },
+  ]);
+  assert.doesNotMatch(JSON.stringify(partial), /provider token|status persistence|secret|error|message/i);
+
+  await vfs.write("/runs/partial-observed/events.jsonl", '{"seq":3,"kind":"unknown","at":"2030-01-01T00:00:00.000Z","error":{"message":"tail-secret"', { append: true });
+  const malformed = await observer.snapshot("partial-observed");
+  assert.equal(malformed.partial, true);
+  assert.equal(malformed.sequence, 2, "an incomplete JSONL tail is not consumed as an event");
+  assert.deepEqual(malformed.events.map(({ seq }) => seq), [1, 2]);
+  assert.doesNotMatch(JSON.stringify(malformed), /tail-secret|error|message/i);
+  assert.equal(malformed.volatile, true);
+  assert.equal(malformed.redacted, true);
+});
+
+test("adversarial RunState observer accepts a terminal admission outcome without inventing partial state", async () => {
+  const vfs = new Vfs();
+  await vfs.mount("mem", "/");
+  const store = createRunStore(vfs);
+  const observer = createRunObserver(vfs);
+  await store.reserve("admission-cancelled", { request: {}, plan: {} });
+  await store.fail("admission-cancelled", "cancelled", error("cancelled before dispatch", "ABORT_ERR"));
+  const snapshot = await observer.snapshot("admission-cancelled");
+  assert.equal(snapshot.status, "cancelled");
+  assert.equal(snapshot.terminal, true);
+  assert.equal(snapshot.partial, false);
+  assert.deepEqual(snapshot.events.map(({ seq, kind }) => ({ seq, kind })), [{ seq: 1, kind: "cancelled" }]);
 });
