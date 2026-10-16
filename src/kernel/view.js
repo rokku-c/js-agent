@@ -4,7 +4,7 @@
 import { VfsError } from "./errors.js";
 import { normalize, resolvePath } from "./paths.js";
 
-const operations = new Set(["stat", "list", "read", "write", "mkdir", "remove", "rename"]);
+const operations = new Set(["stat", "list", "read", "write", "mkdir", "remove", "rename", "watch"]);
 // Private policy data only: neither a facade nor its description exposes resources.
 const policies = new WeakMap();
 
@@ -98,6 +98,10 @@ export function createView(resources, { grants = [] } = {}) {
 
     async exists(path, ...args) {
       return resources.exists(check("stat", path), ...args);
+    },
+
+    watch(path, ...args) {
+      return resources.watch(check("watch", path), ...args);
     },
 
     async list(path, ...args) {
