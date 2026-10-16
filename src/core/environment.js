@@ -66,6 +66,10 @@ function observerPath(root, value) {
  * trusted host functions; this API makes that boundary explicit rather than
  * pretending a resource read is a sandbox for adapter code.
  *
+ * An injected store supplies the default run root; an explicit root must agree.
+ * `store` on the returned Environment is a trusted writer/recovery handle, not an
+ * observer capability. Remount storage and construct a fresh store on restart.
+ *
  * Tool paths are an explicit catalog. Directory discovery is available only via
  * discoverTools(), which requires list authority and is never used by run().
  */
@@ -73,7 +77,7 @@ export function createEnvironment({
   resources,
   storage = resources,
   store,
-  root = "/runs",
+  root = store?.root ?? "/runs",
   model,
   tools = {},
   permissions = {},
@@ -95,6 +99,9 @@ export function createEnvironment({
     toolAdapterByPath.set(adapter.path, adapter.invoke);
   }
   const runRoot = absolutePath(root, "root");
+  if (store?.root !== undefined && absolutePath(store.root, "store.root") !== runRoot) {
+    throw fail("root must match store.root");
+  }
 
   const agentView = createView(resources, { grants: grants(permissions.agent, "permissions.agent") });
   const modelView = createView(resources, { grants: grants(permissions.model, "permissions.model") });
@@ -182,10 +189,18 @@ export function createEnvironment({
     },
     catalogs: { tools: [...toolPaths] },
     permissions: Object.fromEntries(VIEW_NAMES.map((name) => [name, permissionDescriptions[name]()])),
-    runs: { root: runRoot, storage: "run-store", observer: { redacted: true, volatile: true } },
+    runs: {
+      root: runRoot,
+      storage: "run-store",
+      mode: runStore.mode ?? "unknown",
+      recovery: runStore.mode === "durable" && typeof runStore.recover === "function",
+      observer: { redacted: true, volatile: true },
+    },
   });
 
   return Object.freeze({
+    // Trusted service-side handle. Never hand the Environment itself to an observer client.
+    store: runStore,
     run,
     prepareWorkflow,
     catalog,

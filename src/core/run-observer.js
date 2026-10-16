@@ -152,10 +152,12 @@ function signature(snapshot) {
 }
 
 /**
- * Observe volatile RunState without granting access to invocation payloads.
+ * Observe RunState without returning invocation payloads.
  *
  * A snapshot is a best-effort point-in-time view. `volatile: true` means it is not a
- * recovery or durability claim; `partial: true` means the observer saw missing, malformed,
+ * recovery or durability claim, even if `storage: "durable"` is recorded by the writer.
+ * That storage label is metadata, not a capability check. The supplied View still controls
+ * which run IDs are authorized. `partial: true` means the observer saw missing, malformed,
  * unreadable, or internally inconsistent status/event persistence.
  */
 export function createRunObserver(vfs, { root = "/runs", interval = 100 } = {}) {

@@ -97,3 +97,83 @@ process loss or provider disconnect leaves the effect `unknown`, and the store d
 or infer success.
 
 Validation: `npm test` passed with the focused durable tests included.
+
+## Restarting service integration pass
+
+Date: 2026-10-16
+Checkout: `/Users/user/.codex/worktrees/c541/js-agent`
+
+This pass supersedes the earlier volatile-only service assessment above. It adds an actual
+process-loss scenario rather than describing two still-live objects as a process restart.
+
+### Runnable path
+
+```sh
+node examples/restarting-service.js
+```
+
+The example uses only `js-agent/kernel` and `js-agent/runtime` exports. A child service builds
+separate resource and hostfs storage trees, an explicit durable RunStore at `/state/runs`, an
+Environment, and a workflow graph. The parent waits until model dispatch, kills the child with
+SIGKILL, waits for its exit, then remounts the backend and creates fresh service objects. A
+standalone `createRunObserver` reads the same persisted run through an authorized View.
+
+Observed result:
+
+- Before recovery: `storage: "durable"`, status `started`, event sequence 1.
+- After RunStore recovery, followed by graph reconciliation: run and graph are `unknown`,
+  event sequence 2, observer `partial: false`.
+- Model dispatches after restart: **0**.
+- No request/plan/response content appears in the report.
+
+### Friction fixed with minimal public API changes
+
+1. **Injected store roots silently diverged from observer roots.** Environment now defaults
+   its root to `store.root` and rejects a conflicting explicit root. The no-store default
+   remains `/runs` with a volatile store.
+2. **Recovery required preparing a fresh execution just to retrieve the store.**
+   `environment.store` exposes the same trusted writer handle used by `prepareWorkflow`;
+   graph construction and restart recovery no longer need catalog reads or a new request.
+   `describe().runs.mode` and `.recovery` make the selected mode visible.
+3. **A durable capability declaration without `sync()` was accepted until first write.**
+   Construction now fails early with `ENOTSUP`. Capability declarations still come from the
+   adapter; the API cannot certify a custom backend's truthfulness or write authorization.
+4. **A committed `unknown` journal event could leave a stale `started` status snapshot after
+   recovery.** Recovery now reconciles that terminal status too. The regression test injects
+   a failed status write, checks the observer becomes non-partial `unknown`, and checks a
+   subsequent fresh-store recovery does not append another event.
+
+No model request/response, continuation, or tool execution semantics were redesigned.
+
+### Permissions and limits made explicit
+
+- Redaction is not authorization. Broad subtree read grants also permit raw payload reads
+  through `environment.observe` or the source View. The service example instead grants list
+  on the run root, stat on one authorized run directory, and exact reads of `status.json` and
+  `events.jsonl`. Tests deny all three raw payload files, other run IDs, and writes.
+- Only give an untrusted UI the observer facade. Environment and its store are trusted host
+  objects, not client-facing capabilities.
+- `snapshot.storage` is recorded writer metadata; `volatile: true` continues to describe
+  best-effort observation, not the persistence mode. No observer call performs recovery.
+- Recovery requires the previous writer to be stopped or externally fenced. Abandoned writer
+  locks return `EBUSY`; explicit `takeover: true` is tested but is safe only after external
+  confirmation that no prior writer can continue. There is no distributed lease/fencing API.
+- RunStore journal recovery must precede graph reconciliation. Graph snapshots are a separate
+  derived index, do not inherit the durable journal protocol, and can still be missing or
+  corrupt. The example proves process restart, not power-loss or distributed crash safety.
+- External effects remain unknown after interrupted dispatch. There is no automatic replay,
+  exactly-once guarantee, rollback, or distributed transaction.
+- Remounting/reconstructing adapters and reapplying authorization remain service responsibilities;
+  the Environment does not serialize host functions or infer the original backend.
+
+### Verification
+
+```sh
+node examples/restarting-service.js
+node test/run.js restarting-service durable-run-store environment workflow-graph
+npm test
+```
+
+Focused integration/recovery suites: **19 passed**. Full offline suite: **194 passed**.
+The new restart suite is included in both test runners. No credentials or live model endpoint
+were used.
