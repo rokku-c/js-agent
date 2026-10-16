@@ -177,3 +177,52 @@ npm test
 Focused integration/recovery suites: **19 passed**. Full offline suite: **194 passed**.
 The new restart suite is included in both test runners. No credentials or live model endpoint
 were used.
+
+## Public runtime contract conformance pass
+
+Date: 2026-10-16
+
+This pass follows the executable `js-agent/kernel` and `js-agent/runtime` entrypoints as a new
+integration user. It adds [`docs/runtime-api.d.ts`](docs/runtime-api.d.ts) as a typed API
+reference and [`test/public-api-conformance.test.js`](test/public-api-conformance.test.js) as a
+small checker that compares the declared runtime exports with the package and runs a durable
+streaming application.
+
+The application creates an in-memory resource tree, a separate durable hostfs storage tree,
+and an Environment with exact agent and observer grants. Its trusted model adapter consumes an
+incremental canonical stream. The RunStore persists the private request and completed response;
+the observer returns only status/event metadata. A read-only resource View rejects a write, and
+an incomplete stream rejects with `EINCOMPLETE`, `outcome: "unknown"`, and a partial response.
+
+The pass also clarifies a documentation mismatch. The “Complete local flow” in
+`docs/protocols.md` describes the target resource protocol using a `mounts` field and an agent
+path, while the current executable constructor uses `resources`, `storage`, `model`, `tools`,
+and `permissions`. That section is now labeled pseudocode and links to
+`docs/getting-started.md` for the runnable API.
+
+Contract findings:
+
+- Resource operations are independently authorized; read does not imply write.
+- Complete model streams require closed blocks and `message_stop`; the runtime preserves an
+  interrupted dispatch as `unknown`.
+- Durable RunStore construction requires declared exclusive mkdir, atomic rename, append, and
+  flush capabilities. Memory storage remains volatile and is rejected for durable mode.
+- `environment.observer` and `createRunObserver` are redacted and best effort. The lower-level
+  `environment.observe.inspect` and `inspectInvocation` APIs are trusted inspection paths and
+  can expose payloads only when their View grants those files.
+- Public failures are thrown with machine-readable `.code` values such as `EACCES`, `EPROTO`,
+  `EINCOMPLETE`, and `ENOTSUP`.
+
+Validation:
+
+```text
+node --test test/public-api-conformance.test.js
+3 passed
+
+npm test
+248 passed
+
+node examples/getting-started.js
+node examples/environment-app.js
+node examples/restarting-service.js
+```

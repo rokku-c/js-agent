@@ -121,6 +121,11 @@ The durable directory is:
 
 ## Complete local flow
 
+> The following block is the target resource protocol expressed as pseudocode. It is not the
+> current JavaScript constructor signature: the executable API uses `createEnvironment({
+> resources, storage, model, tools, permissions })`. Start with [getting started](./getting-started.md)
+> for a runnable application and use this section for the durable resource layout.
+
 ```js
 const env = createEnvironment({
   mounts: [
