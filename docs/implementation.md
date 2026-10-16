@@ -135,8 +135,14 @@ unless a backend and commit protocol establish stronger guarantees.
 
 `createWorkflowGraph` persists node and edge state above individual RunState records. It supports
 concurrent branches, joins, keyed continuation deduplication, aggregate cancellation, and
-restart inspection. It is still backed by volatile storage; external effects remain `unknown`
-when recovery cannot establish their outcome.
+restart inspection. Snapshot persistence remains the default. Opt into
+`createWorkflowGraph({ storage, store, persistence: "journal" })` to record changed nodes
+and edges in an append journal with an atomic commit pointer. Existing snapshots and
+journals are detected on read. With a durable RunStore, graph mutations use a filesystem
+writer lock and flushed atomic writes; a stale lock fails with `EBUSY` rather than being
+stolen. External effects remain `unknown` when recovery cannot establish their outcome.
+See [the journal benchmark report](../WORKFLOW-GRAPH-JOURNAL-REPORT.md) for measurements,
+restart limits and the stale-lock recovery procedure.
 
 Try the graph example with:
 

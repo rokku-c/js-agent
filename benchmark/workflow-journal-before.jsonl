@@ -1,0 +1,3 @@
+{"persistence":"snapshot","branches":32,"elapsedMs":16,"bytes":662881,"writes":68,"coldInspectMs":0.3}
+{"persistence":"snapshot","branches":128,"elapsedMs":61.5,"bytes":9987229,"writes":260,"coldInspectMs":1}
+{"persistence":"snapshot","branches":512,"elapsedMs":782.3,"bytes":158705245,"writes":1028,"coldInspectMs":2.2}

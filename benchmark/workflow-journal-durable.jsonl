@@ -1,0 +1,4 @@
+{"storage":"durable","persistence":"snapshot","branches":32,"elapsedMs":2646.9,"bytes":662881,"writes":68,"coldInspectMs":1.9}
+{"storage":"durable","persistence":"snapshot","branches":128,"elapsedMs":10610.6,"bytes":9987229,"writes":260,"coldInspectMs":9.1}
+{"storage":"durable","persistence":"journal","branches":32,"elapsedMs":3663.9,"bytes":56305,"writes":136,"coldInspectMs":8.3}
+{"storage":"durable","persistence":"journal","branches":128,"elapsedMs":14593.5,"bytes":219587,"writes":520,"coldInspectMs":56.4}

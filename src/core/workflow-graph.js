@@ -1,3 +1,4 @@
+import { readGraphDocument, writeGraphJournal, hasJournal } from "./workflow-journal.js";
 import { invokeOnce } from "./invocation.js";
 import { normalize } from "../kernel/paths.js";
 import { continueOnce } from "./workflow.js";
@@ -65,10 +66,11 @@ function graphLock(storage, graphPath, operation) {
   return current;
 }
 
-async function writeSnapshot(storage, path, value) {
+async function writeSnapshot(storage, path, value, durable = false) {
   const text = JSON.stringify(value, null, 2);
   const temporary = `${path}.tmp-${Math.random().toString(36).slice(2, 12)}`;
   await storage.write(temporary, text, { create: true });
+  if (durable) await storage.sync(temporary);
   if (typeof storage.rename !== "function") {
     await storage.write(path, text, { create: true });
     try { await storage.remove?.(temporary); } catch { /* best effort */ }
@@ -76,8 +78,12 @@ async function writeSnapshot(storage, path, value) {
   }
   try {
     await storage.rename(temporary, path);
+    if (durable) {
+      await storage.sync(path);
+      await storage.sync(path.slice(0, path.lastIndexOf("/")));
+    }
   } catch (error) {
-    if (error?.code !== "ENOTSUP") throw error;
+    if (durable || error?.code !== "ENOTSUP") throw error;
     await storage.write(path, text, { create: true });
     try { await storage.remove?.(temporary); } catch { /* best effort */ }
   }
@@ -92,7 +98,7 @@ async function readJson(storage, path) {
 async function readGraph(storage, graphId, root) {
   const path = pathJoin(root, graphId);
   let state;
-  try { state = await readJson(storage, `${path}/graph.json`); }
+  try { state = await readGraphDocument(storage, path, graphId); }
   catch (error) {
     if (error instanceof SyntaxError) throw fail("invalid workflow graph JSON", "EPROTO");
     throw error;
@@ -226,7 +232,7 @@ export async function inspectWorkflowGraph(storage, graphId, options = {}) {
  * a small persisted index over the existing RunStore invocation records. It supplies the
  * missing ownership/idempotency boundary without changing the one-request primitives.
  */
-export function createWorkflowGraph({ storage, store, root = "/workflows" } = {}) {
+export function createWorkflowGraph({ storage, store, root = "/workflows", persistence = "snapshot", lockTimeoutMs = 2_000 } = {}) {
   if (!storage || typeof storage.read !== "function" || typeof storage.write !== "function") {
     throw fail("workflow graph requires storage read/write", "EINVAL");
   }
@@ -241,6 +247,39 @@ export function createWorkflowGraph({ storage, store, root = "/workflows" } = {}
     throw fail("workflow graph root must be separate from the run store root", "EINVAL");
   }
 
+  if (!["snapshot", "journal"].includes(persistence)) throw fail("unsupported graph persistence", "EINVAL");
+  if (!Number.isSafeInteger(lockTimeoutMs) || lockTimeoutMs < 1) throw fail("invalid graph lock timeout", "EINVAL");
+  const durable = store.mode === "durable";
+  if (durable) {
+    const caps = storage.capabilities?.(root) ?? {};
+    if (!(caps.durable && caps.exclusiveMkdir && caps.atomicRename && caps.flush)
+      || ["sync", "remove", "rename", "mkdir", "mkdirp"].some(method => typeof storage[method] !== "function")) {
+      throw fail("durable graph requires exclusive mkdir, atomic rename and flush at its root", "ENOTSUP");
+    }
+  }
+
+  // The lock is outside the graph directory so creation is covered as well.
+  // Never steal a stale lock automatically: a paused writer may still commit.
+  async function locked(graphId, operation) {
+    const path = pathJoin(root, graphId);
+    return graphLock(storage, path, async () => {
+      if (!durable) return operation();
+      await storage.mkdirp(root);
+      const lock = pathJoin(root, `.lock-${graphId}`);
+      const started = Date.now();
+      for (;;) {
+        try { await storage.mkdir(lock, { exclusive: true }); break; }
+        catch (error) {
+          if (error.code !== "EEXIST") throw error;
+          if (Date.now() - started >= lockTimeoutMs) throw fail(`workflow graph writer is busy: ${graphId}`, "EBUSY");
+          await new Promise(resolve => setTimeout(resolve, 2));
+        }
+      }
+      try { return await operation(); }
+      finally { await storage.remove(lock, { recursive: true }); }
+    });
+  }
+
   const controllers = new Map();
   const inFlight = new Map();
 
@@ -250,19 +289,24 @@ export function createWorkflowGraph({ storage, store, root = "/workflows" } = {}
 
   async function save(state) {
     state.updated = now();
-    await writeSnapshot(storage, `${state.path}/graph.json`, state);
+    if (hasJournal(state) || (persistence === "journal" && state.nodes.length === 0)) {
+      await writeGraphJournal(storage, state, (path, value) => writeSnapshot(storage, path, value, durable));
+    } else {
+      await writeSnapshot(storage, `${state.path}/graph.json`, state, durable);
+    }
     return state;
   }
 
   async function create(graphId) {
     graphId = id(graphId, "graph id");
     const path = pathJoin(root, graphId);
-    return graphLock(storage, path, async () => {
+    return locked(graphId, async () => {
       if (typeof storage.exists === "function" && await storage.exists(path)) {
         throw fail(`workflow graph already exists: ${graphId}`, "EEXIST");
       }
       await storage.mkdirp(root);
-      await storage.mkdir(path);
+      await storage.mkdir(path, { exclusive: true });
+      if (durable) await storage.sync(root);
       const state = emptyGraph(graphId, root);
       await save(state);
       controllers.set(graphId, new AbortController());
@@ -271,8 +315,8 @@ export function createWorkflowGraph({ storage, store, root = "/workflows" } = {}
   }
 
   async function mutate(graphId, operation) {
-    const graphPath = pathJoin(root, id(graphId, "graph id"));
-    return graphLock(storage, graphPath, async () => {
+    id(graphId, "graph id");
+    return locked(graphId, async () => {
       const state = await load(graphId);
       const value = await operation(state);
       await save(state);
@@ -462,8 +506,9 @@ export function createWorkflowGraph({ storage, store, root = "/workflows" } = {}
       if (state.cancelRequested || state.status === "cancelled") return { cancelled: true, state };
       // Match the stored relationship rather than its encoding, including v1 keys
       // written before edge components were escaped.
+      const nodesByKey = new Map(state.nodes.map(node => [node.key, node]));
       const existing = state.edges.find((edge) => edge.from === parentKey
-        && state.nodes.some((node) => node.key === edge.to && node.branchKey === branchKey));
+        && nodesByKey.get(edge.to)?.branchKey === branchKey);
       if (existing) return { existing: true, state, edge: existing };
       const parentNode = state.nodes.find((node) => node.key === parentKey);
       if (!parentNode) throw fail(`parent invocation has not completed: ${parentKey}`, "EAGAIN");

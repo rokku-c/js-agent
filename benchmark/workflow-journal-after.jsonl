@@ -1,0 +1,8 @@
+{"storage":"memory","persistence":"snapshot","branches":32,"elapsedMs":18.4,"bytes":662881,"writes":68,"coldInspectMs":0.3}
+{"storage":"memory","persistence":"snapshot","branches":128,"elapsedMs":63.9,"bytes":9987229,"writes":260,"coldInspectMs":1.1}
+{"storage":"memory","persistence":"snapshot","branches":512,"elapsedMs":678.6,"bytes":158705245,"writes":1028,"coldInspectMs":2.1}
+{"storage":"memory","persistence":"snapshot","branches":1024,"elapsedMs":2364.6,"bytes":634460917,"writes":2052,"coldInspectMs":4}
+{"storage":"memory","persistence":"journal","branches":32,"elapsedMs":14,"bytes":56305,"writes":136,"coldInspectMs":0.6}
+{"storage":"memory","persistence":"journal","branches":128,"elapsedMs":79.5,"bytes":219587,"writes":520,"coldInspectMs":1.8}
+{"storage":"memory","persistence":"journal","branches":512,"elapsedMs":1043.6,"bytes":876285,"writes":2056,"coldInspectMs":7.6}
+{"storage":"memory","persistence":"journal","branches":1024,"elapsedMs":4216.2,"bytes":1754141,"writes":4104,"coldInspectMs":14.6}

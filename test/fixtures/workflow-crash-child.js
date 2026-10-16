@@ -4,7 +4,7 @@ import { createRunStore, createWorkflowGraph } from '../../src/runtime.js';
 const storage = new Vfs();
 await storage.mount('hostfs', '/', { source: process.argv[2], mode: 'rw' });
 const store = createRunStore(storage, { mode: 'durable' });
-const graph = createWorkflowGraph({ storage, store });
+const graph = createWorkflowGraph({ storage, store, persistence: process.env.GRAPH_PERSISTENCE ?? "snapshot" });
 const tool = { path: '/tools/read', name: 'read', description: 'Read', input_schema: { type: 'object' } };
 const agent = { model: '/models/fake', tools: [tool.path] };
 let calls = 0;
