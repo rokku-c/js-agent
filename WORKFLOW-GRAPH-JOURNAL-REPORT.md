@@ -133,3 +133,13 @@ stores still coordinate only within one shared storage object; use durable mode 
 multiple processes. All writers must use this updated runtime for its lock protocol to
 protect the graph. Keep snapshots for ordinary workloads; consider the journal only
 when graph write volume is the measured constraint and these tradeoffs are acceptable.
+
+## Adversarial lock and record checks
+
+A separate child-process test kills a durable journal writer while it owns the graph lock,
+before the commit pointer is published. A fresh mount can still inspect the incomplete graph,
+but its write is rejected with `EBUSY` and the lock remains present. This is deliberate operator
+fencing: recovery must establish that every writer has stopped and remove the lock explicitly.
+The journal tests also retain fail-closed checks for missing published records, malformed JSON,
+sequence mismatches, and late completion after explicit recovery; no provider outcome is
+invented when the commit pointer or invocation evidence is uncertain.

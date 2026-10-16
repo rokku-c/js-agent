@@ -138,6 +138,28 @@ test('journal: malformed/missing published records fail closed on cold read', as
   await assert.rejects(fresh.inspect('shared'), { code: 'EPROTO' });
 });
 
+test('journal: malformed published deltas fail closed before graph validation', async () => {
+  const { storage, store, graph } = await open();
+  await start(graph);
+  const headPath = '/workflows/shared/graph.json';
+  const head = JSON.parse(await storage.read(headPath));
+  const recordPath = `/workflows/shared/journal/${String(head.sequence).padStart(12, '0')}.json`;
+  const original = await storage.read(recordPath);
+  const malformed = [
+    { sequence: head.sequence, fields: {}, nodes: [{ key: 'root' }, { key: 'root' }], edges: [] },
+    { sequence: head.sequence, fields: { nodes: [] }, nodes: [], edges: [] },
+    { sequence: head.sequence, fields: {}, nodes: [{ key: 1 }], edges: [] },
+  ];
+  for (const delta of malformed) {
+    await storage.write(recordPath, JSON.stringify(delta));
+    const facade = { read: storage.read.bind(storage), write: storage.write.bind(storage) };
+    const fresh = createWorkflowGraph({ storage: facade, store, persistence: 'journal' });
+    await assert.rejects(fresh.inspect('shared'), { code: 'EPROTO' });
+  }
+  await storage.write(recordPath, original);
+  assert.equal((await graph.inspect('shared')).nodes.length, 1);
+});
+
 test('durable stale graph lock fails closed without stealing ownership', async t => {
   const { directory, storage, graph } = await fixture(t);
   await start(graph);
@@ -146,6 +168,25 @@ test('durable stale graph lock fails closed without stealing ownership', async t
   await assert.rejects(restarted.graph.cancel('shared'), { code: 'EBUSY' });
   assert.equal(await storage.exists('/workflows/.lock-shared'), true);
   assert.equal((await restarted.graph.inspect('shared')).cancelRequested, false);
+});
+
+test('journal: SIGKILL while publishing leaves an operator-owned stale lock', { timeout: 15000 }, async t => {
+  const { directory } = await fixture(t);
+  const child = fork(new URL('./fixtures/workflow-journal-lock-child.js', import.meta.url), [directory], {
+    stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
+  });
+  t.after(() => child.kill());
+  assert.equal((await once(child, 'message'))[0].ready, true);
+  assert.equal((await once(child, 'message'))[0].entered, true);
+  const exited = once(child, 'exit');
+  child.kill('SIGKILL');
+  assert.equal((await exited)[1], 'SIGKILL');
+
+  const restarted = await open(directory, 'journal', { lockTimeoutMs: 10 });
+  assert.equal(await restarted.storage.exists('/workflows/.lock-locked'), true);
+  await assert.rejects(restarted.graph.inspect('locked'), { code: 'ENOENT' });
+  await assert.rejects(restarted.graph.cancel('locked'), { code: 'EBUSY' });
+  assert.equal(await restarted.storage.exists('/workflows/.lock-locked'), true);
 });
 
 test('journal: SIGKILL during dispatch leaves a recoverable claim, not a held graph lock', { timeout: 15000 }, async t => {
