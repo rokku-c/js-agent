@@ -163,8 +163,8 @@ A reference identifies a resource and an optional selector:
 
 ```ts
 interface ResourceRef {
-  path: string;
-  version?: string;
+  $ref: string;
+  revision?: string;
   mode?: "live" | "pinned";
   selector?: Selector;
 }
@@ -184,7 +184,7 @@ Examples:
 ```
 
 ```json
-{ "$ref": "/workspace", "version": "git:abc123", "selector": "changed-files" }
+{ "$ref": "/workspace", "revision": "git:abc123", "mode": "pinned", "selector": "changed-files" }
 ```
 
 References have two modes:

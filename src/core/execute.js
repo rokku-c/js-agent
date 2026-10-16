@@ -40,6 +40,8 @@ export function describeCall(tool, input) {
  * @param {object} opts.input           raw arguments (not yet validated)
  * @param {string} opts.cwd
  * @param {number} opts.timeoutMs
+ * @param {object} [opts.context]       immutable per-run authority
+ * @param {AbortSignal} [opts.signal]  cancellation for in-process tools
  * @param {object} opts.policy
  * @param {number} opts.maxOutput
  * @param {string} [opts.id]            the tool_use id this answers
@@ -51,7 +53,9 @@ export async function invokeTool({
   vfs,
   tool,
   input,
-  cwd = "/",
+  context = null,
+  signal = context?.signal ?? null,
+  cwd = context?.cwd ?? "/",
   timeoutMs = 120_000,
   policy = null,
   maxOutput = 8000,
@@ -67,9 +71,13 @@ export async function invokeTool({
     const validated = validateInput(tool, input ?? {});
     const command = describeCall(tool, validated);
 
-    if (policy) {
+    if (context && !context.tools.includes(tool.name)) {
+      throw new VfsError("EPERM", `this run does not have tool ${tool.name}`);
+    }
+    const effectivePolicy = context?.policy ?? policy;
+    if (effectivePolicy) {
       const { gate } = await import("./policy.js");
-      await gate(policy, vfs, { tool: tool.name, command, input: validated });
+      await gate(effectivePolicy, vfs, { tool: tool.name, command, input: validated });
     }
 
     if (tool.name === "js" && validated.code !== undefined) {
@@ -86,6 +94,7 @@ export async function invokeTool({
         timeoutMs,
         source: tool.name === "js" ? validated.code : undefined,
         onOutput,
+        signal,
       });
       outcome = r.ok ? { ok: true, value: r.value } : { ok: false, raw: r.error };
     } else {
@@ -94,7 +103,8 @@ export async function invokeTool({
         cwd,
         input: validated,
         log,
-        signal: null,
+        context,
+        signal,
         source: tool.name === "js" ? validated.code : undefined,
       });
       outcome = { ok: true, value };

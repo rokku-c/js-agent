@@ -1,5 +1,9 @@
 # Core Protocols and Examples
 
+This document sketches the target protocol; its examples are not yet executable APIs.
+See [Implementation status](./implementation.md) and the [offline example](../examples/one-request.js)
+for the current executable subset.
+
 This document is the compact implementation contract. The other design documents explain why
 the pieces exist; this document shows how they fit together.
 
@@ -132,7 +136,7 @@ const run = await env.run("/agents/reviewer", {
 });
 
 console.log(await env.read(`${run.path}/status.json`));
-console.log(await env.read(`${run.path}/resolved/system.json`));
+console.log(await env.read(`${run.path}/invocations/inv-0/plan.json`));
 console.log(await env.read(`${run.path}/events.jsonl`));
 ```
 

@@ -9,8 +9,11 @@ fundamentally a long-lived session object.
 
 This is a design specification, not a claim that every part is implemented in the current
 prototype. The implementation should be judged against the invariants in this document. The
-current prototype is a compatibility starting point; it does not yet provide enforced Views,
-durable RunState, connector delegation, or one-request Invocation continuations.
+legacy prototype remains a compatibility starting point. The experimental runtime now provides
+file-operation Views and one-request records; durable recovery, generic connector delegation,
+and automatic continuations remain planned.
+
+For implemented APIs and current limitations, start with [Implementation status](./implementation.md).
 
 ## Contents
 

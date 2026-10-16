@@ -134,9 +134,11 @@ An Invocation performs these phases:
 3. resolve model, system, context, and tools;
 4. persist the resolved plan;
 5. issue one model request;
-6. execute permitted tool effects;
-7. record output and state transitions;
-8. optionally create a linked next Invocation.
+6. record the complete response and terminal state;
+7. return proposed tool calls without executing them.
+
+An optional workflow dispatches those tool effects and constructs another Invocation. The
+one-request primitive does not require a Run scheduler or persistent session.
 
 A model request that needs another tool call does not require a mutable session object. The
 next request is a new Invocation linked by `parent` or `continuation`.
@@ -214,7 +216,10 @@ An Invocation owns:
 
 - its View;
 - its model request;
-- its tool executions;
+- resources opened by that request.
+
+The optional workflow separately owns tool executions and their:
+
 - open resource handles;
 - child processes or workers;
 - timers and output buffers.
@@ -285,8 +290,9 @@ Resolution has three distinct moments:
 
 1. **Plan resolution:** AgentSpec, authored View, model, prompt definitions, tool catalog,
    and revision are resolved before the request.
-2. **Context resolution:** selectors read from a named environment snapshot and produce an
-   immutable context artifact for that request.
+2. **Context resolution:** selectors capture individually authorized observations and produce an
+   immutable context artifact for that request. A snapshot-capable driver may supply a snapshot
+   ID; unrelated remote systems do not share an implied atomic snapshot.
 3. **Effect-time resolution:** model-generated tool arguments and live references inside them
    are resolved immediately before the tool effect, then recorded in the effect plan.
 

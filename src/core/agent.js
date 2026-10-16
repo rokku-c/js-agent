@@ -34,6 +34,7 @@ import * as events from "./events.js";
 import { invokeTool } from "./execute.js";
 import { toolDefinition } from "./tools.js";
 import { Policy } from "./policy.js";
+import { createRunContext } from "./run-context.js";
 import { streamStep, streamFlush } from "./markdown.js";
 import { style } from "../shell/style.js";
 
@@ -180,31 +181,26 @@ export async function loadToolsFromBin(vfs, names) {
  * @param {object} opts
  */
 export async function run(vfs, opts) {
-  // the capability context is saved and restored around the run so a nested run cannot
-  // leave its own, smaller set behind for the parent to trip over on the way out
-  const inherited = {
-    tools: vfs.agentTools,
-    policy: vfs.agentPolicy,
-    session: vfs.agentSession,
-    depth: vfs.agentDepth,
-  };
-  try {
-    return await loop(vfs, opts);
-  } finally {
-    Object.assign(vfs, {
-      agentTools: inherited.tools,
-      agentPolicy: inherited.policy,
-      agentSession: inherited.session,
-      agentDepth: inherited.depth,
-    });
-  }
+  // Legacy options still describe a root run. A delegated run supplies its already
+  // narrowed context explicitly; it never consults mutable state on the namespace.
+  const supplied = opts.context ?? opts;
+  const authority = { ...supplied, tools: [...(supplied.tools ?? ["read", "write", "edit"])] };
+  const policy = authority.policy ?? await Policy.load(vfs, {
+    file: opts.policyFile ?? null,
+    compiled: opts.compiledPolicy == null ? null : structuredClone(opts.compiledPolicy),
+  });
+  const initialContext = createRunContext({
+    ...authority,
+    tools: authority.tools ?? ["read", "write", "edit"],
+    policy,
+  });
+  return loop(vfs, opts, initialContext);
 }
 
-async function loop(vfs, opts) {
+async function loop(vfs, opts, initialContext) {
   const {
     prompt,
     system = null,
-    tools: toolNames = ["read", "write", "edit"],
     vendor = null,
     model: modelName = null,
     maxTokens = null,
@@ -223,18 +219,13 @@ async function loop(vfs, opts) {
     resume = false,
     tail = null,
     noSave = false,
-    policyFile = null,
-    compiledPolicy = null,
-    depth = 0,
-    parent = null,
     onText = null,
     onThinking = null,
     onTool = null,
     onNote = null,
-    inProcess = false,
-    signal = null,
   } = opts;
 
+  const { tools: toolNames, policy, depth, parent, inProcess, signal, cwd } = initialContext;
   const note = onNote ?? (() => {});
   const provider = await resolveProvider(vfs, { vendor, model: modelName });
   const { objects: toolObjects, definitions: tools } = await loadToolsFromBin(vfs, toolNames);
@@ -242,17 +233,6 @@ async function loop(vfs, opts) {
   /** the line-buffered markdown state, which has to survive between stream chunks because
    *  markdown is block-level and a chunk boundary lands mid-fence often */
   let mdState = { buf: "", inFence: false };
-
-  const policy = await Policy.load(vfs, { file: policyFile, compiled: compiledPolicy });
-
-  // ── the capability context a nested run narrows against ──
-  // carried on the vfs because that is the one object a subagent shares with its parent,
-  // and because a subagent has to be able to see the ceiling it may not exceed.
-  vfs.agentTools = toolNames.join(",");
-  // the *compiled rules*, not a path: a child handed a path could point it at an empty file
-  // and escape the restriction it was given
-  vfs.agentPolicy = policy.rules;
-  vfs.agentDepth = depth;
 
   // ── sessions ──
   let prior = null;
@@ -273,7 +253,7 @@ async function loop(vfs, opts) {
   const loaded = w.loaded;
   const saveIt = !noSave && (sessionId != null || prior != null);
   const id = sessionId ?? prior?.id ?? null;
-  vfs.agentSession = id;
+  const context = createRunContext({ ...initialContext, session: id });
   const effectiveModel = modelName ?? prior?.model ?? provider.model;
   const effectiveSystem = system ?? prior?.system ?? null;
 
@@ -460,7 +440,9 @@ async function loop(vfs, opts) {
           vfs,
           tool,
           input: call.input ?? {},
-          cwd: opts.cwd ?? "/",
+          cwd,
+          context,
+          signal,
           timeoutMs: toolTimeoutMs,
           policy,
           maxOutput,

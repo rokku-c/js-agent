@@ -1,6 +1,8 @@
 # js-agent
 
 > **Architecture documentation:** [docs/README.md](./docs/README.md)
+> **Experimental runtime:** [implementation status](./docs/implementation.md) · `node examples/one-request.js`
+> The CLI described below retains the prototype loop; the experimental API performs one model request.
 
 An agent runtime that runs inside an operating system it mounts itself.
 

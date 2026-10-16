@@ -21,12 +21,13 @@
 //   · **depth**: capped, so a task that calls a task that calls a task stops.
 
 import { defineTool } from "../core/tools.js";
-import { VfsError } from "../kernel/errors.js";
+import { Policy } from "../core/policy.js";
+import { createRunContext, deriveChildContext, DEFAULT_MAX_DEPTH } from "../core/run-context.js";
 import { run } from "../core/agent.js";
 import { clamp } from "../core/fileio.js";
 
 export const DEFAULT_TASK_TOOLS = ["read", "ls", "js"];
-export const DEFAULT_MAX_DEPTH = 2;
+export { DEFAULT_MAX_DEPTH };
 
 export default defineTool({
   name: "task",
@@ -44,34 +45,24 @@ export default defineTool({
     system: { type: "string", flag: "system", description: "override the subagent's standing instructions" },
     model: { type: "string", flag: "model" },
     maxRounds: { type: "integer", flag: "max-rounds", default: 12 },
-    maxDepth: { type: "integer", flag: "max-depth", default: DEFAULT_MAX_DEPTH },
+    maxDepth: { type: "integer", flag: "max-depth", description: "narrow the inherited recursion limit (default: 2 for a standalone task)" },
     json: { type: "boolean", flag: "json" },
   },
 
-  async run({ vfs, cwd, input }) {
-    // ── depth ──
-    const depth = Number(vfs.agentDepth ?? 0);
-    if (depth >= input.maxDepth) {
-      throw new VfsError("EPERM", `refusing to recurse past depth ${input.maxDepth}`, {
-        operation: "task",
-        hint: "a subagent may call task, but not without bound — raise max-depth deliberately if you mean to",
-      });
-    }
-
-    // ── capability narrowing ──
-    // the parent's set, as the agent command mounted it. the child may narrow it and never
-    // widen it — `read` is not a request, it is the ceiling.
-    const parentTools = String(vfs.agentTools ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  async run({ vfs, cwd, input, context = null, signal = null }) {
+    // A shell invocation has no parent run; its ceiling is the mounted catalog.
+    const parentContext = context ?? createRunContext({
+      tools: (await vfs.list("/bin")).map((entry) => entry.name),
+      policy: await Policy.load(vfs),
+      maxDepth: input.maxDepth ?? DEFAULT_MAX_DEPTH,
+      cwd,
+      signal,
+    });
     const requested = (input.tools ?? DEFAULT_TASK_TOOLS).map(String);
-    if (parentTools.length) {
-      const rogue = requested.filter((t) => !parentTools.includes(t));
-      if (rogue.length) {
-        throw new VfsError("EPERM", `refusing to give the subagent tool(s) this run does not have: ${rogue.join(", ")}`, {
-          operation: "task",
-          hint: `this run has: ${parentTools.join(", ")}. a subagent may narrow the parent's capabilities, never widen them.`,
-        });
-      }
-    }
+    const childContext = deriveChildContext(parentContext, {
+      tools: requested,
+      maxDepth: input.maxDepth ?? parentContext.maxDepth,
+    });
 
     const result = await run(vfs, {
       prompt: input.prompt,
@@ -80,18 +71,14 @@ export default defineTool({
         "You are a subagent. You have been given one task by another agent and no access to " +
           "its conversation. Do the task, and answer with the result — not with a description " +
           "of what you would do.",
-      tools: requested,
+      context: childContext,
       model: input.model ?? null,
       maxRounds: input.maxRounds,
       cwd,
-      compiledPolicy: vfs.agentPolicy ?? null,
-      depth: depth + 1,
-      parent: vfs.agentSession ?? null,
       // no streaming: the text is the tool result, and a stream would go to the wrong place
       stream: false,
-      // and no session: the transcript is stored by the *caller* below, so the child does
-      // not have to have a session store at all
-      noSave: false,
+      // The child transcript returns as the caller's tool result; no separate session.
+      noSave: true,
       sessionId: null,
       onNote: () => {},
     });

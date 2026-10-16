@@ -1,0 +1,89 @@
+# Implementation Status
+
+The architecture documents describe the target. This page records the first implementation
+milestone and the boundary between available code and planned behavior.
+
+## First milestone: one request with observable inputs and output
+
+The public experimental entrypoint is `js-agent/runtime`. Its primitives are intentionally
+independent: callers can use a resource View or reference resolver without running an agent.
+
+| Primitive | Responsibility | Boundary |
+| --- | --- | --- |
+| `createView(resources, {grants})` | Authorize file operations and derive narrower views | Trusted JavaScript API; no process isolation or driver-handle delegation |
+| `resolveReference(resources, ref)` | Read a text reference, select lines, record hashes | Exact paths, live reads, SHA-256 content assertions; no Git snapshots or search selectors |
+| `resolveArguments(resources, input)` | Resolve explicit `$ref` objects inside arguments | Ordinary strings remain literal; `$literal` escapes structured data |
+| `createRunStore(storage)` | Record request, materialized plan, response, status and events | Volatile milestone; atomic rename is not an fsync or distributed transaction guarantee |
+| `invokeOnce(options)` | Resolve a simple AgentSpec and dispatch exactly one model request | No tool execution, retries, session, or continuation scheduler |
+
+The legacy CLI remains available. It now passes immutable run context through tools and nested
+tasks instead of mutating `vfs.agent*` fields. Its existing model loop and Worker lifecycle are
+not replaced by this milestone.
+
+## Resource Views
+
+Grant paths are exact paths or a trailing `/**` subtree pattern, including that subtree's root.
+Operations default to denied. Requests are normalized before matching, and derived Views
+intersect with their parents. Views do not expose raw drivers, mounting, or `open()` handles.
+
+```js
+const reader = createView(vfs, {
+  grants: [{ path: '/workspace/**', operations: ['stat', 'list', 'read'] }],
+});
+const sourceOnly = reader.derive({
+  grants: [{ path: '/workspace/src/**', operations: ['read'] }],
+});
+```
+
+`exists` requires `stat`. Listings reveal only immediate children covered by effective grants.
+`mkdirp` preflights `stat` and `mkdir` authority on every non-root ancestor. Recursive deletion
+and directory renaming authorize whole driver operations; do not grant them when descendant
+exceptions must be preserved. File Views do not constrain a trusted driver's internal effects.
+
+The trusted host supplies model and tool adapters separately. Selecting an adapter is an
+explicit service capability; it does not grant reads of its credentials. The generic service
+grant protocol in the architecture is still planned.
+
+## Reference semantics
+
+```js
+const selected = await resolveReference(reader, {
+  $ref: '/workspace/src/main.js',
+  selector: { lines: [1, 20] },
+});
+```
+
+Line ranges are one-based and inclusive, preserving the original line endings. `mode: 'live'`
+is the default. For `mode: 'pinned'`, `revision` must be a full-source `sha256:<hex>` digest.
+This checks the current source against that digest; it does not retrieve historical content.
+The provenance records full-source and selected-content hashes. Unsupported selectors fail.
+
+A reference byte cap bounds selected content after reading. Current VFS reads may buffer the
+entire source; this is not yet a transport or memory quota. Historical retrieval and bounded
+streaming require driver support.
+
+## AgentSpec and execution
+
+The milestone accepts only `model`, `system`, `context`, and `tools`. An AgentSpec can be a
+plain object or an absolute path to a JSON file. Prompt and context entries are references;
+model and tool selections are exact paths in explicitly supplied adapter catalogs.
+
+The host supplies the effective resources facade. Authored `view`, Git `revision`, dynamic
+module loading and other unsupported fields must fail rather than silently imply enforcement.
+Model requests receive captured input and tool definitions. Proposed tool calls are returned
+as data; the host decides whether and how to execute them.
+
+No mandatory Run/session wrapper is introduced. Each invocation directly owns `/runs/<id>`.
+A future optional workflow can group these records without changing the one-request primitive.
+Concurrent requests are independent; conflict handling for shared workspaces is not supplied
+by concurrency itself.
+
+## Verification and next steps
+
+New focused suites cover Views, references, overlapping legacy runs and one-request execution.
+The offline example demonstrates their composition without credentials or network access.
+
+Next milestones should add bounded model/stream lifecycle adapters, reference-aware dynamic
+tools and explicit continuation assembly before Git activation. Worktree switching, remote
+connectors, browser packaging, hostile-code isolation, durable recovery and UI hosting remain
+planned. Existing prototype tests do not establish those guarantees.

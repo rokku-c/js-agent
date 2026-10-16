@@ -21,9 +21,10 @@ const ENTRY = new URL("./worker-entry.js", import.meta.url);
  * @param {number} opts.timeoutMs
  * @param {string} [opts.source]  for the `js` tool: the script, instead of a tool module
  * @param {(msg: {kind: string, text: string}) => void} [opts.onOutput]
+ * @param {AbortSignal} [opts.signal]
  * @returns {Promise<{ok: boolean, value?: any, error?: string, timedOut?: boolean}>}
  */
-export function runInWorker({ vfs, toolName, input, cwd, timeoutMs, source, onOutput }) {
+export function runInWorker({ vfs, toolName, input, cwd, timeoutMs, source, onOutput, signal }) {
   return new Promise((resolve) => {
     const worker = new Worker(ENTRY, {
       workerData: { tool: toolName, input, cwd, source },
@@ -42,8 +43,17 @@ export function runInWorker({ vfs, toolName, input, cwd, timeoutMs, source, onOu
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      signal?.removeEventListener?.("abort", onAbort);
+      for (const handle of handles.values()) Promise.resolve(handle.close?.()).catch(() => {});
+      handles.clear();
       worker.terminate().catch(() => {});
       resolve(result);
+    };
+
+    const onAbort = () => {
+      if (settled) return;
+      worker.terminate().catch(() => {});
+      finish({ ok: false, error: "the tool was cancelled before it produced a result", cancelled: true });
     };
 
     const timer = setTimeout(async () => {
@@ -61,6 +71,8 @@ export function runInWorker({ vfs, toolName, input, cwd, timeoutMs, source, onOu
       });
     }, timeoutMs);
     timer.unref?.();
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener?.("abort", onAbort, { once: true });
 
     worker.on("message", async (m) => {
       if (m.type === "done") return finish({ ok: true, value: m.value });
