@@ -106,3 +106,25 @@ is not an automatic session loop and it accepts only already materialized tool r
 An `entry.js` field is descriptive metadata and is never imported or evaluated by this milestone.
 The host must bind executable behavior explicitly. This keeps dynamic tool metadata composable
 without accidentally turning resource content into ambient code.
+
+## Environment and Run observation
+
+The current runtime also exports `createEnvironment`, `createRunObserver`, and
+`createWorkflowGraph`. `createEnvironment` composes four explicit views—agent, model, tools,
+and observer—around the existing one-request primitives. Model and tool adapters remain trusted
+host functions; the facade makes that boundary visible and does not claim to sandbox them.
+
+`createRunObserver` lists and watches redacted volatile RunState snapshots. It treats malformed
+or incomplete event tails as partial observations rather than inventing success. It does not
+turn volatile storage into durable recovery.
+
+`createWorkflowGraph` persists node and edge state above individual RunState records. It supports
+concurrent branches, joins, keyed continuation deduplication, aggregate cancellation, and
+restart inspection. It is still backed by volatile storage; external effects remain `unknown`
+when recovery cannot establish their outcome.
+
+Try the graph example with:
+
+```sh
+node examples/workflow-graph.js
+```
