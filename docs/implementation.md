@@ -16,7 +16,8 @@ independent: callers can use a resource View or reference resolver without runni
 | `createRunStore(storage)` | Record request, materialized plan, response, status and events | Volatile milestone; atomic rename is not an fsync or distributed transaction guarantee |
 | `invokeOnce(options)` | Resolve a simple AgentSpec and dispatch exactly one model request | No tool execution, retries, session, or continuation scheduler |
 | `loadToolDefinition(resources, path)` | Load and validate a resource-backed tool definition | Metadata only; `entry.js` is never executed |
-| `buildContinuation(options)` | Build the next canonical request from one response and a complete tool batch | Pure builder; no model call or tool execution |
+| `buildContinuation(options)` | Build the next canonical request tail from one response and a complete tool batch | Pure builder; no model call or tool execution |
+| `continueOnce(options)` | Dispatch one explicit continuation from a parent request | No tool execution or implicit session loop; parent linkage is recorded in the plan |
 
 The legacy CLI remains available. It now passes immutable run context through tools and nested
 tasks instead of mutating `vfs.agent*` fields. Its existing model loop and Worker lifecycle are
@@ -94,8 +95,9 @@ planned. Existing prototype tests do not establish those guarantees.
 
 `buildContinuation` requires one result for every `tool_use` block in the parent response. It
 preserves provider blocks, IDs, result order, and error flags, then returns a deeply frozen request.
-The caller decides when to persist and dispatch that request as a new Invocation. It is not an
-automatic session loop.
+The caller decides when to persist and dispatch that request as a new Invocation. `continueOnce`
+does that dispatch while preserving the parent's system, tool catalog, and message history. It
+is not an automatic session loop and it accepts only already materialized tool results.
 
 ## Dynamic tool definitions
 

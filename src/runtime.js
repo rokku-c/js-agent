@@ -6,3 +6,4 @@ export { invokeOnce } from './core/invocation.js';
 
 export { buildContinuation } from './core/continuation.js';
 export { loadToolDefinition, toolCatalog } from './core/tool-resource.js';
+export { continueOnce, assembleContinuationRequest } from './core/workflow.js';
