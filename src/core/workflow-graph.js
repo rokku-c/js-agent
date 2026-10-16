@@ -23,9 +23,9 @@ function id(value, label) {
   return value;
 }
 
-function key(value, label = "branchKey") {
+function key(value, label = "branchKey", maxLength = 128) {
   if (typeof value !== "string" || value.trim() === "") throw fail(`${label} must be a nonempty string`);
-  if (value.length > 128) throw fail(`${label} exceeds 128 characters`);
+  if (value.length > maxLength) throw fail(`${label} exceeds ${maxLength} characters`);
   return value;
 }
 
@@ -86,6 +86,47 @@ async function readJson(storage, path) {
   return JSON.parse(await storage.read(path));
 }
 
+// graph.json is an index, not authority to select a different write destination.
+// Reject ambiguous/corrupt topology before inspection reads links or recovery mutates it.
+async function readGraph(storage, graphId, root) {
+  const path = pathJoin(root, graphId);
+  let state;
+  try { state = await readJson(storage, `${path}/graph.json`); }
+  catch (error) {
+    if (error instanceof SyntaxError) throw fail("invalid workflow graph JSON", "EPROTO");
+    throw error;
+  }
+  const invalid = () => { throw fail(`invalid workflow graph schema: ${graphId}`, "EPROTO"); };
+  if (!state || state.version !== 1 || state.id !== graphId || state.path !== path
+    || !Array.isArray(state.nodes) || !Array.isArray(state.edges)
+    || typeof state.cancelRequested !== "boolean") invalid();
+  const nodes = new Map();
+  const invocations = new Set();
+  for (const node of state.nodes) {
+    if (!node || typeof node.key !== "string" || !node.key || nodes.has(node.key)
+      || typeof node.invocationId !== "string" || !ID.test(node.invocationId)
+      || invocations.has(node.invocationId) || typeof node.invocationPath !== "string"
+      || !node.invocationPath.startsWith("/") || !node.invocationPath.endsWith(`/${node.invocationId}`)
+      || node.invocationPath.includes("//") || node.invocationPath.split("/").includes("..")) invalid();
+    nodes.set(node.key, node);
+    invocations.add(node.invocationId);
+  }
+  if (state.root === null ? nodes.size !== 0 : !nodes.has(state.root)) invalid();
+  const edges = new Set();
+  const targets = new Set();
+  for (const edge of state.edges) {
+    if (!edge || typeof edge.key !== "string" || !edge.key || edges.has(edge.key)
+      || !nodes.has(edge.from) || !nodes.has(edge.to) || edge.to === state.root
+      || targets.has(edge.to) || nodes.get(edge.to).parent !== edge.from) invalid();
+    edges.add(edge.key);
+    targets.add(edge.to);
+  }
+  for (const node of nodes.values()) {
+    if (node.key !== state.root && !targets.has(node.key)) invalid();
+  }
+  return state;
+}
+
 function now() {
   return new Date().toISOString();
 }
@@ -118,10 +159,12 @@ function linkedSignal(primary, secondary) {
   return controller.signal;
 }
 
-function defaultInvocationId(graphId, branchKey) {
-  const clean = branchKey.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "branch";
-  const suffix = `${graphId}-${clean}`.slice(0, 128);
-  return suffix;
+// Hash the full logical identity, not a lossy slug: parents, punctuation and long
+// graph IDs must not alias one durable invocation reservation.
+async function branchIdentity(graphId, parentKey, branchKey) {
+  const bytes = new TextEncoder().encode(JSON.stringify([graphId, parentKey, branchKey]));
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function emptyGraph(id, root) {
@@ -142,8 +185,7 @@ function emptyGraph(id, root) {
 
 async function inspectRaw(storage, graphId, { root = "/workflows" } = {}) {
   id(graphId, "graph id");
-  const path = pathJoin(root, graphId);
-  const graph = await readJson(storage, `${path}/graph.json`);
+  const graph = await readGraph(storage, graphId, root);
   const reconciliation = await Promise.all((graph.nodes ?? []).map(async (node) => {
     let persistedStatus = null;
     try {
@@ -196,7 +238,7 @@ export function createWorkflowGraph({ storage, store, root = "/workflows" } = {}
   const inFlight = new Map();
 
   async function load(graphId) {
-    return readJson(storage, `${pathJoin(root, id(graphId, "graph id"))}/graph.json`);
+    return readGraph(storage, id(graphId, "graph id"), root);
   }
 
   async function save(state) {
@@ -281,10 +323,11 @@ export function createWorkflowGraph({ storage, store, root = "/workflows" } = {}
       }
       const controller = controllers.get(graphId) ?? new AbortController();
       controllers.set(graphId, controller);
-      const invocationId = options.rootId ?? `${graphId}-root`;
+      const invocationId = id(options.rootId ?? `${graphId}-root`, "root invocation id");
       const invocationPath = pathJoin(store.root ?? "/runs", invocationId);
       const claim = await mutate(graphId, (current) => {
         if (current.root) return { existing: true, state: current };
+        if (current.cancelRequested) return { existing: true, state: current };
         current.root = "root";
         current.nodes.push({
           key: "root",
@@ -316,6 +359,7 @@ export function createWorkflowGraph({ storage, store, root = "/workflows" } = {}
       delete invocationOptions.rootId;
 
       let rootResult;
+      let rootCancelled = false;
       let toolResults = [];
       try {
         rootResult = await invokeOnce({ ...invocationOptions, store });
@@ -331,17 +375,28 @@ export function createWorkflowGraph({ storage, store, root = "/workflows" } = {}
         if (!cancelled) {
           await mutate(graphId, (current) => {
             const node = current.nodes.find((item) => item.key === "root");
-            if (node) Object.assign(node, {
-              status: "unknown",
+            if (!node || node.recovery === "process_restart") return current;
+            Object.assign(node, {
+              status: current.cancelRequested ? "cancelled" : "unknown",
               invocationStatus: "unknown",
               error: failure(error),
             });
-            current.status = "unknown";
+            current.status = current.cancelRequested ? "cancelled" : "unknown";
             return current;
           });
           throw error;
         }
-        rootResult = rootResult ?? { id: invocationId, status: "cancelled", response: null };
+        rootCancelled = true;
+        if (!rootResult) {
+          let persistedStatus;
+          try { persistedStatus = (await readJson(storage, `${invocationPath}/status.json`)).status; }
+          catch { /* Missing evidence must not imply a known cancellation outcome. */ }
+          rootResult = {
+            id: invocationId, path: invocationPath,
+            status: INVOCATION_TERMINAL.has(persistedStatus) ? persistedStatus : "unknown",
+            response: null,
+          };
+        }
       }
 
       let parentResult = rootResult;
@@ -359,7 +414,7 @@ export function createWorkflowGraph({ storage, store, root = "/workflows" } = {}
         };
       }
       const node = {
-        status: rootResult.status,
+        status: rootCancelled ? "cancelled" : rootResult.status,
         invocationStatus: rootResult.status,
         ...(rootResult.toolCalls?.length ? { toolCallIds: rootResult.toolCalls.map((call) => call.id) } : {}),
       };
@@ -368,8 +423,8 @@ export function createWorkflowGraph({ storage, store, root = "/workflows" } = {}
         // A restarted graph may have already classified this dispatch as unknown. A
         // late completion must not make that recovered claim look successful.
         if (!currentNode || currentNode.recovery === "process_restart") return current;
-        Object.assign(currentNode, node);
-        current.status = current.cancelRequested || rootResult.status === "cancelled"
+        Object.assign(currentNode, node, current.cancelRequested ? { status: "cancelled" } : {});
+        current.status = current.cancelRequested || rootCancelled || rootResult.status === "cancelled"
           ? "cancelled"
           : rootResult.status === "unknown" ? "unknown"
             : rootResult.status === "completed_with_tool_calls" ? "waiting" : "completed";
@@ -386,17 +441,22 @@ export function createWorkflowGraph({ storage, store, root = "/workflows" } = {}
     object(options, "branch options");
     const graphId = id(options.graphId, "graph id");
     const branchKey = key(options.branchKey);
-    const parentKey = key(options.parentKey ?? "root", "parentKey");
-    const edgeKey = `${parentKey}:${branchKey}`;
+    const parentKey = key(options.parentKey ?? "root", "parentKey", 135);
+    const edgeKey = `${encodeURIComponent(parentKey)}:${encodeURIComponent(branchKey)}`;
     const flightKey = `${graphId}:${edgeKey}`;
     const existingFlight = inFlight.get(flightKey);
     if (existingFlight) {
       return existingFlight.then((result) => ({ ...result, deduplicated: true }));
     }
 
-    const claim = await mutate(graphId, (state) => {
+    // A coordinator reconstructed from disk has no startRoot-created controller.
+    if (!controllers.has(graphId)) controllers.set(graphId, new AbortController());
+    const claim = await mutate(graphId, async (state) => {
       if (state.cancelRequested || state.status === "cancelled") return { cancelled: true, state };
-      const existing = state.edges.find((edge) => edge.key === edgeKey);
+      // Match the stored relationship rather than its encoding, including v1 keys
+      // written before edge components were escaped.
+      const existing = state.edges.find((edge) => edge.from === parentKey
+        && state.nodes.some((node) => node.key === edge.to && node.branchKey === branchKey));
       if (existing) return { existing: true, state, edge: existing };
       const parentNode = state.nodes.find((node) => node.key === parentKey);
       if (!parentNode) throw fail(`parent invocation has not completed: ${parentKey}`, "EAGAIN");
@@ -406,9 +466,16 @@ export function createWorkflowGraph({ storage, store, root = "/workflows" } = {}
       if (!options.parent || options.parent.id !== parentNode.invocationId) {
         throw fail(`parent result does not match graph node: ${parentKey}`);
       }
-      const invocationId = options.id ?? defaultInvocationId(graphId, branchKey);
+      const identity = await branchIdentity(graphId, parentKey, branchKey);
+      const legacyId = `${graphId}-${branchKey}`;
+      const compatibleId = parentKey === "root" && ID.test(branchKey) && ID.test(legacyId)
+        && !state.nodes.some((node) => node.invocationId === legacyId) ? legacyId : null;
+      const invocationId = options.id ?? compatibleId ?? `${graphId.slice(0, 60)}-${identity}`;
       id(invocationId, "branch invocation id");
-      const nodeKey = `branch:${branchKey}`;
+      if (state.nodes.some((node) => node.invocationId === invocationId)) {
+        throw fail(`invocation already belongs to another graph node: ${invocationId}`, "EEXIST");
+      }
+      const nodeKey = parentKey === "root" ? `branch:${branchKey}` : `node:${identity}`;
       const node = {
         key: nodeKey,
         kind: "continuation",
@@ -422,6 +489,7 @@ export function createWorkflowGraph({ storage, store, root = "/workflows" } = {}
       state.nodes.push(node);
       const edge = { key: edgeKey, from: parentKey, to: nodeKey, status: "running" };
       state.edges.push(edge);
+      if (state.status === "completed") state.status = "running";
       return { claimed: true, node, edge };
     });
 
@@ -472,12 +540,12 @@ export function createWorkflowGraph({ storage, store, root = "/workflows" } = {}
         const edge = state.edges.find((item) => item.key === edgeKey);
         if (node.recovery !== "process_restart") {
           Object.assign(node, {
-            status,
+            status: state.cancelRequested ? "cancelled" : status,
             invocationStatus,
             finishedAt: now(),
             ...(error && !cancelled ? { error: failure(error) } : {}),
           });
-          edge.status = status;
+          edge.status = node.status;
           if (state.cancelRequested) state.status = "cancelled";
           else if (status === "unknown") state.status = "unknown";
         }
@@ -485,7 +553,7 @@ export function createWorkflowGraph({ storage, store, root = "/workflows" } = {}
       });
       if (error && !cancelled) throw error;
       const finalNode = finalState.nodes.find((node) => node.key === claim.node.key);
-      return { graphId, branchKey, status, result, node: cloneNode(finalNode) };
+      return { graphId, branchKey, status: finalNode.status, result, node: cloneNode(finalNode) };
     })();
     inFlight.set(flightKey, operation);
     try { return await operation; } finally { inFlight.delete(flightKey); }
@@ -513,6 +581,7 @@ export function createWorkflowGraph({ storage, store, root = "/workflows" } = {}
       current.status = "cancelling";
       return current;
     });
+    if (!state.cancelRequested) return state;
     const controller = controllers.get(graphId);
     if (controller && !controller.signal.aborted) controller.abort(reason instanceof Error ? reason : fail("workflow cancelled", "ABORT_ERR"));
     const current = await load(graphId);
@@ -530,18 +599,14 @@ export function createWorkflowGraph({ storage, store, root = "/workflows" } = {}
         const node = state.nodes.find((candidate) => candidate.key === item.key);
         if (!node || node.status !== "running") continue;
         const edge = state.edges.find((candidate) => candidate.to === node.key);
-        if (!INVOCATION_TERMINAL.has(item.persistedStatus)) {
-          node.status = "unknown";
-          node.invocationStatus = "unknown";
-          node.recovery = "process_restart";
-          if (edge) edge.status = "unknown";
-          recovered = true;
-        } else if (INVOCATION_TERMINAL.has(item.persistedStatus)) {
-          node.status = item.persistedStatus;
-          node.invocationStatus = item.persistedStatus;
-          if (edge) edge.status = item.persistedStatus;
-          recovered = true;
-        }
+        const invocationStatus = INVOCATION_TERMINAL.has(item.persistedStatus) ? item.persistedStatus : "unknown";
+        node.status = state.cancelRequested ? "cancelled" : invocationStatus;
+        node.invocationStatus = invocationStatus;
+        // Fence every reconciled claim, including an unknown already committed by
+        // RunStore.recover(), from a pre-recovery evaluator's late completion.
+        node.recovery = "process_restart";
+        if (edge) edge.status = node.status;
+        recovered = true;
       }
       if (recovered) state.status = state.cancelRequested ? "cancelled" : graphStatus(state);
       return state;
