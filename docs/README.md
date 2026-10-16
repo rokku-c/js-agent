@@ -10,8 +10,8 @@ fundamentally a long-lived session object.
 This is a design specification, not a claim that every part is implemented in the current
 prototype. The implementation should be judged against the invariants in this document. The
 legacy prototype remains a compatibility starting point. The runtime provides file-operation Views, one-request records, explicit Environment and
-workflow graph composition, and a Git revision connector; durable recovery, generic connector
-delegation, and automatic continuation scheduling remain planned.
+workflow graph composition, a Git revision connector, and named connector service delegation;
+manifest-based credential/network grants and automatic continuation scheduling remain planned.
 
 For implemented APIs and current limitations, start with [Implementation status](./implementation.md). To run the shortest complete application, see [Getting started](./getting-started.md).
 

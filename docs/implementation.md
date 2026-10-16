@@ -11,6 +11,7 @@ independent: callers can use a resource View or reference resolver without runni
 | Primitive | Responsibility | Boundary |
 | --- | --- | --- |
 | `createView(resources, {grants})` | Authorize file operations and derive narrower views | Trusted JavaScript API; no process isolation or driver-handle delegation |
+| `createServiceAuthority(services, {grants})` | Delegate exact named connector operations and derive narrower authorities | Trusted handlers own credential/network policy and sanitization; no sandbox or manifest interpreter |
 | `resolveReference(resources, ref)` | Read a text reference, select lines, record hashes | Exact paths, live reads, SHA-256 content assertions; no Git snapshots or search selectors |
 | `resolveArguments(resources, input)` | Resolve explicit `$ref` objects inside arguments | Ordinary strings remain literal; `$literal` escapes structured data |
 | `createRunStore(storage)` | Record request, materialized plan, response, status and events | Volatile milestone; atomic rename is not an fsync or distributed transaction guarantee |
@@ -117,6 +118,13 @@ The current runtime also exports `createEnvironment`, `createRunObserver`, and
 `createWorkflowGraph`. `createEnvironment` composes four explicit views—agent, model, tools,
 and observer—around the existing one-request primitives. Model and tool adapters remain trusted
 host functions; the facade makes that boundary visible and does not claim to sandbox them.
+
+Environment accepts a trusted `services` registry or parent service authority. The model and
+individual tool adapters receive only their explicit `serviceGrants`, defaulting to none.
+A tool's optional `resourceGrants` further narrows its inherited tool view, independently of
+catalog loading. Effective grants appear in `describe().delegation`. See the
+[service-authority report](./real-use-service-authority.md) and
+[runnable example](../examples/connector-service-authority.js).
 
 `createRunObserver` lists and watches redacted volatile RunState snapshots. It treats malformed
 or incomplete event tails as partial observations rather than inventing success. `createEnvironment`

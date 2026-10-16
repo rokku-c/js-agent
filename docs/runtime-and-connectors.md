@@ -193,3 +193,68 @@ policy, idempotency behavior, and shutdown behavior through its status resources
 This distinction also defines the trust boundary. A trusted connector may hold a credential;
 a model, observer, or ordinary Agent code must not receive it unless a separate View grants
 that access.
+
+### Implemented service delegation
+
+The JavaScript runtime exports `createServiceAuthority(services, { grants })`. `services`
+is a trusted record of named handlers, or an existing service authority. Grants are exact
+operation names, default to `[]`, and are intersected with available parent operations.
+Unknown names confer no authority; there is no wildcard syntax. The returned frozen facade
+has `call(name, input, options)`, `derive({ grants })`, and `describe()`. Descriptions contain
+only effective grant names. Handler bindings and grant arrays are snapshotted.
+
+```js
+const modelOnly = createServiceAuthority({
+  "model.request": privateProviderRequest,
+  "network.health": privateHealthCheck,
+}, { grants: ["model.request"] });
+
+const environment = createEnvironment({
+  resources,
+  services: modelOnly,
+  model: {
+    path: "/models/default",
+    serviceGrants: ["model.request"],
+    adapter: (request, { services, signal }) =>
+      services.call("model.request", request, { signal }),
+  },
+  tools: {
+    paths: ["/tools/lookup"],
+    adapters: [{
+      path: "/tools/lookup",
+      resourceGrants: [{ path: "/workspace/brief.md", operations: ["read"] }],
+      serviceGrants: [],
+      invoke: ({ input, resources }) => resources.read(input.path),
+    }],
+  },
+  permissions: {
+    tools: [
+      { path: "/tools/**", operations: ["read"] },
+      { path: "/workspace/**", operations: ["read"] },
+    ],
+  },
+});
+```
+
+Environment also accepts a trusted handler record directly as `services`. Model and tool
+adapters receive independent service facades; omitted `serviceGrants` deny every service
+operation. An injected parent authority caps all these grants. Agent reference resolution
+and observers receive no service facade. `describe().delegation` reports effective service
+grants and per-tool resource views without revealing handlers or credential values.
+
+A tool's optional `resourceGrants` narrows `permissions.tools` by intersection. An empty
+array removes all resource authority; omitting it retains the existing shared tool view.
+The tool catalog still loads definitions through `permissions.tools`, so a tool adapter
+need not read its own definition or other tools' metadata. Caller-supplied adapter options
+cannot replace the assigned resource/service facades.
+
+This implements named operation delegation, **not** the declarative `credential.use` or
+`network.request` manifest interpreter sketched above. A trusted provider handler must bind
+its credential and endpoint policy, validate inputs, handle redirects and cancellation, and
+sanitize responses/errors. Do not expose a generic credential getter or unrestricted HTTP
+handler as `model.request`. The authority facade forwards handler outputs and errors; it
+does not redact them or contain hostile host JavaScript. Neither adapters nor service
+handlers become untrusted sandboxes.
+
+See [the offline runnable example](../examples/connector-service-authority.js) and
+[the service-authority exercise report](real-use-service-authority.md).

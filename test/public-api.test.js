@@ -12,6 +12,7 @@ test("package exports expose the documented public entrypoints", () => {
 
   for (const name of [
     "createEnvironment",
+    "createServiceAuthority",
     "createRunObserver",
     "createWorkflowGraph",
     "inspectWorkflowGraph",

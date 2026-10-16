@@ -1,4 +1,5 @@
 import { createView } from "../kernel/view.js";
+import { createServiceAuthority } from "../connectors/service-authority.js";
 import { normalize } from "../kernel/paths.js";
 import { createRunStore } from "./run-store.js";
 import { toolCatalog } from "./tool-resource.js";
@@ -44,7 +45,7 @@ function adapterRecord(value, index) {
   object(value, `tools.adapters[${index}]`);
   const path = absolutePath(value.path, `tools.adapters[${index}].path`);
   const invoke = adapterMethod(value.invoke, "invoke", `tools.adapters[${index}]`);
-  return { path, invoke };
+  return { path, invoke, resourceGrants: value.resourceGrants, serviceGrants: value.serviceGrants };
 }
 
 function viewDescription(view) {
@@ -62,8 +63,10 @@ function observerPath(root, value) {
  * The resource tree is shared, but permissions are four independent views:
  * the agent resolves prompt/context references, the model adapter receives its
  * own service view, tool adapters receive another service view, and observers
- * read run state through a view over storage. Model and tool adapters remain
- * trusted host functions; this API makes that boundary explicit rather than
+ * read run state through a view over storage. Each tool may further narrow its
+ * view with resourceGrants. Named serviceGrants delegate only selected trusted
+ * connector operations; services defaults to an empty registry. Model and tool
+ * adapters remain trusted host functions; this API makes that boundary explicit rather than
  * pretending a resource read is a sandbox for adapter code.
  *
  * An injected store supplies the default run root; an explicit root must agree.
@@ -81,6 +84,7 @@ export function createEnvironment({
   model,
   tools = {},
   permissions = {},
+  services = {},
   observerInterval = 100,
 } = {}) {
   if (!resources || typeof resources !== "object") throw fail("resources must be a resource adapter");
@@ -96,7 +100,7 @@ export function createEnvironment({
   const toolAdapterByPath = new Map();
   for (const adapter of toolAdapters) {
     if (toolAdapterByPath.has(adapter.path)) throw fail(`duplicate trusted tool adapter: ${adapter.path}`, "EEXIST");
-    toolAdapterByPath.set(adapter.path, adapter.invoke);
+    toolAdapterByPath.set(adapter.path, adapter);
   }
   const runRoot = absolutePath(root, "root");
   if (store?.root !== undefined && absolutePath(store.root, "store.root") !== runRoot) {
@@ -106,6 +110,15 @@ export function createEnvironment({
   const agentView = createView(resources, { grants: grants(permissions.agent, "permissions.agent") });
   const modelView = createView(resources, { grants: grants(permissions.model, "permissions.model") });
   const toolsView = createView(resources, { grants: grants(permissions.tools, "permissions.tools") });
+  const modelServices = createServiceAuthority(services, { grants: grants(model.serviceGrants, "model.serviceGrants") });
+  for (const adapter of toolAdapters) {
+    adapter.resources = adapter.resourceGrants === undefined ? toolsView : toolsView.derive({
+      grants: grants(adapter.resourceGrants, "tool adapter resourceGrants"),
+    });
+    adapter.services = createServiceAuthority(services, {
+      grants: grants(adapter.serviceGrants, "tool adapter serviceGrants"),
+    });
+  }
   const observerView = createView(storage, { grants: grants(permissions.observer, "permissions.observer") });
   // Keep the low-level resource View available for trusted integrations, and expose a
   // separate observer facade that only returns redacted RunState metadata.
@@ -127,7 +140,7 @@ export function createEnvironment({
     return {
       path: modelPath,
       async request(request, options = {}) {
-        return modelRequest(request, { ...options, resources: modelView });
+        return modelRequest(request, { ...options, resources: modelView, services: modelServices });
       },
     };
   }
@@ -144,12 +157,14 @@ export function createEnvironment({
     for (const definition of definitions) {
       const adapter = toolAdapterByPath.get(definition.path);
       if (!adapter) throw fail(`no trusted adapter supplied for tool path ${definition.path}`, "EACCES");
-      adapters.set(definition.name, async ({ input: toolInput, ...adapterOptions }) => adapter({
+      const invoke = adapter.invoke;
+      adapters.set(definition.name, async ({ input: toolInput, ...adapterOptions }) => invoke({
         ...adapterOptions,
         input: toolInput,
         path: definition.path,
         definition,
-        resources: toolsView,
+        resources: adapter.resources,
+        services: adapter.services,
       }));
     }
     return {
@@ -188,6 +203,14 @@ export function createEnvironment({
       tools: toolPaths.map((path) => ({ path, kind: "trusted-host-adapter" })),
     },
     catalogs: { tools: [...toolPaths] },
+    delegation: {
+      model: { services: modelServices.describe() },
+      tools: toolAdapters.map((adapter) => ({
+        path: adapter.path,
+        resources: adapter.resources.describe(),
+        services: adapter.services.describe(),
+      })),
+    },
     permissions: Object.fromEntries(VIEW_NAMES.map((name) => [name, permissionDescriptions[name]()])),
     runs: {
       root: runRoot,
