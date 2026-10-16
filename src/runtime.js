@@ -9,3 +9,4 @@ export { loadToolDefinition, toolCatalog } from './core/tool-resource.js';
 export { continueOnce, assembleContinuationRequest } from './core/workflow.js';
 
 export { InMemoryConnector, createInMemoryConnector } from "./connectors/in-memory.js";
+export { executeToolCalls, inspectInvocation, runWorkflow } from './core/workflow-harness.js';

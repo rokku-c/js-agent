@@ -144,9 +144,12 @@ export function assembleContinuationRequest({ parent, parentResponse, toolResult
   const parentRequest = clone(source, "parent request");
   validateParentResponse(parentRequest, parentResponse);
   const tail = buildContinuation({ parentResponse, toolResults, ...(input === undefined ? {} : { input }) });
+  // The parent request is validated as the transcript through the assistant tool-use
+  // response. buildContinuation also returns that response as a standalone tail for its
+  // pure callers, so avoid duplicating it when assembling a full continuation request.
   const request = clone({
     ...parentRequest,
-    messages: [...parentRequest.messages, ...tail.messages],
+    messages: [...parentRequest.messages, ...tail.messages.slice(1)],
   }, "continuation request");
   return freeze(request);
 }

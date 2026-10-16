@@ -52,7 +52,7 @@ test("continuation preserves canonical request configuration and appends the bui
   const request = fake.calls[0].request;
   assert.equal(request.system, before.request.system);
   assert.deepEqual(request.tools, before.request.tools);
-  assert.deepEqual(request.messages.map((message) => message.role), ["user", "assistant", "assistant", "user", "user"]);
+  assert.deepEqual(request.messages.map((message) => message.role), ["user", "assistant", "user", "user"]);
   assert.deepEqual(prior, before);
   assert.ok(Object.isFrozen(request));
   assert.ok(Object.isFrozen(request.messages));
