@@ -136,18 +136,23 @@ export async function consumeModelEvents(events, { onEvent, signal, requireCompl
   const openBlocks = new Set();
   let ended = false;
   const iterator = events[Symbol.asyncIterator]?.() ?? events[Symbol.iterator]();
-  let onAbort;
-  const aborted = new Promise((_, reject) => {
-    onAbort = () => reject(Object.assign(new Error("model stream cancelled", { cause: signal?.reason }), { code: "ABORT_ERR" }));
-    signal?.addEventListener("abort", onAbort, { once: true });
-    if (signal?.aborted) onAbort();
-  });
-  // Attach a handler even if cancellation happens between awaits.
-  aborted.catch(() => {});
-  const wait = (value) => signal ? Promise.race([aborted, value]) : value;
+  const abortError = () => Object.assign(new Error("model stream cancelled", { cause: signal?.reason }), { code: "ABORT_ERR" });
+  // Only the current await needs cancellation. Racing every event against one
+  // pending abort promise retains a reaction per event until the stream ends.
+  let rejectPending;
+  const onAbort = () => rejectPending?.(abortError());
+  signal?.addEventListener("abort", onAbort, { once: true });
+  const wait = (value) => {
+    if (!signal) return value;
+    return new Promise((resolve, reject) => {
+      rejectPending = reject;
+      Promise.resolve(value).then(resolve, reject);
+      if (signal.aborted) reject(abortError());
+    }).finally(() => { rejectPending = undefined; });
+  };
   try {
     for (;;) {
-      if (signal?.aborted) await aborted;
+      if (signal?.aborted) throw abortError();
       const next = await wait(iterator.next());
       if (next.done) { ended = true; break; }
       const ev = next.value;

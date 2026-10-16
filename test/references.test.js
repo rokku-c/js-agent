@@ -97,3 +97,22 @@ test("rejects unknown fields, invalid ranges, cycles, and unsafe depth", async (
   for (let i = 0; i < 65; i++) deep = { value: deep };
   await assert.rejects(() => resolveArguments(resources, deep), /depth/);
 });
+
+test("line selection handles empty lines, CRLF, final lines and a large unselected suffix", async () => {
+  for (const [text, range, expected] of [
+    ['\n\r\nlast', [2, 3], '\r\nlast'],
+    ['a\nb\n', [2, 2], 'b\n'],
+    ['a\nb', [2, 2], 'b'],
+    ['\n', [1, 1], '\n'],
+    ['α\n' + 'x\n'.repeat(500000), [1, 1], 'α\n'],
+  ]) {
+    const result = await resolveReference(facade({ '/x': text }), { $ref: '/x', selector: { lines: range } }, { maxBytes: 16 });
+    assert.equal(result.value, expected);
+    assert.equal(result.provenance.contentHash, await digest(text));
+    assert.equal(result.provenance.selectedHash, await digest(expected));
+  }
+  for (const [text, range, count] of [['', [1, 1], 0], ['a\n', [2, 2], 1], ['a\nb', [1, 3], 2]]) {
+    await assert.rejects(resolveReference(facade({ '/x': text }), { $ref: '/x', selector: { lines: range } }),
+      new RegExp(`outside the ${count}-line source`));
+  }
+});

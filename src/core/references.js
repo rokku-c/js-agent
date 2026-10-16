@@ -98,31 +98,22 @@ function toBytes(raw) {
   throw fail("resource reads must return UTF-8 text or bytes");
 }
 
-function splitLines(text) {
-  const lines = [];
-  let start = 0;
-  for (let i = 0; i < text.length; ) {
-    if (text[i] !== "\n") {
-      i++;
-      continue;
-    }
-    const end = i + 1;
-    lines.push(text.slice(start, end));
-    start = end;
-    i = end;
-  }
-  if (start < text.length) lines.push(text.slice(start));
-  return lines;
-}
-
 function selectLines(text, selector) {
   if (!selector) return text;
-  const lines = splitLines(text);
   const [start, end] = selector.lines;
-  if (start > lines.length || end > lines.length) {
-    throw fail(`reference line range [${start}, ${end}] is outside the ${lines.length}-line source`);
+  let offset = 0;
+  let selectedStart = 0;
+  let count = 0;
+  // Locate only the requested range. Creating a string/array entry for every
+  // source line wastes substantial memory when selecting a few lines of a file.
+  while (offset < text.length) {
+    count++;
+    if (count === start) selectedStart = offset;
+    const newline = text.indexOf("\n", offset);
+    offset = newline === -1 ? text.length : newline + 1;
+    if (count === end) return text.slice(selectedStart, offset);
   }
-  return lines.slice(start - 1, end).join("");
+  throw fail(`reference line range [${start}, ${end}] is outside the ${count}-line source`);
 }
 
 async function sha256(bytes) {

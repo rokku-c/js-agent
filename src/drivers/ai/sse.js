@@ -32,26 +32,36 @@ export { seed, applyEvent, assemble } from "../../core/model-stream.js";
 
 /** a chunk→frame reader. feed it decoded text; it yields whole SSE frames. */
 export function makeFrameReader() {
-  let buf = "";
+  // Keep only the possible delimiter prefix for rescanning. Unfinished frame
+  // fragments are joined once, rather than copying/rescanning the whole frame
+  // for every network chunk (quadratic for a large fragmented tool argument).
+  let parts = [];
+  let tail = "";
   return {
     push(chunk) {
-      buf += chunk;
+      const text = tail + chunk;
       const out = [];
-      // SSE delimits events with a blank line; accept CRLF as well as LF, because a
-      // proxy that rewrites the stream is not the caller's problem to notice
-      let m;
-      const re = /\r?\n\r?\n/;
-      while ((m = re.exec(buf))) {
-        out.push(buf.slice(0, m.index));
-        buf = buf.slice(m.index + m[0].length);
+      const re = /\r?\n\r?\n/g;
+      let start = 0;
+      let match;
+      while ((match = re.exec(text))) {
+        parts.push(text.slice(start, match.index));
+        out.push(parts.join(""));
+        parts = [];
+        start = match.index + match[0].length;
       }
+      // The longest delimiter is four characters, so three suffice across chunks.
+      const end = Math.max(start, text.length - 3);
+      if (end > start) parts.push(text.slice(start, end));
+      tail = text.slice(end);
       return out;
     },
-    /** whatever is left when the stream ends without a final blank line — the last event
-     *  usually has none, and dropping it loses the end of every reply. */
+    /** Preserve the final event even without a terminating blank line. */
     flush() {
-      const rest = buf;
-      buf = "";
+      parts.push(tail);
+      const rest = parts.join("");
+      parts = [];
+      tail = "";
       return rest.trim() ? [rest] : [];
     },
   };

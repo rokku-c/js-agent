@@ -355,3 +355,30 @@ test("adversarial RunState observer accepts a terminal admission outcome without
   assert.equal(snapshot.partial, false);
   assert.deepEqual(snapshot.events.map(({ seq, kind }) => ({ seq, kind })), [{ seq: 1, kind: "cancelled" }]);
 });
+
+test("observer list bounds concurrent storage operations and preserves sorted results", async () => {
+  for (const concurrency of [undefined, 3]) {
+    let active = 0, peak = 0;
+    const ids = Array.from({ length: 70 }, (_, i) => `run-${String(i).padStart(3, '0')}`);
+    async function io(value) {
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise(setImmediate);
+      active--;
+      return value;
+    }
+    const storage = {
+      list: async () => ids.toReversed().map(name => ({ name, type: 'dir' })),
+      stat: () => io({ type: 'dir' }),
+      read: (path) => io(path.endsWith('status.json')
+        ? JSON.stringify({ id: path.split('/')[2], status: 'reserved' }) : ''),
+    };
+    const observer = createRunObserver(storage, { concurrency });
+    assert.deepEqual((await observer.list()).map(run => run.id), ids);
+    assert.equal(peak, concurrency ?? 32);
+    assert.equal(active, 0);
+    for (const invalid of [0, -1, 1.5, Infinity]) {
+      assert.throws(() => createRunObserver(storage, { concurrency: invalid }), { code: 'EINVAL' });
+    }
+  }
+});

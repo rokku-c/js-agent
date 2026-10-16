@@ -315,3 +315,55 @@ test("Environment cancellation before dispatch is cancelled with zero requests",
   assert.equal(requests, 0);
   assert.equal((await env.observe.inspect("pre-cancelled")).status.status, "cancelled");
 });
+
+test("SSE frame reader preserves every delimiter split and an unterminated tail", () => {
+  const expected = ['data: α', 'data: first\r\ndata: second', 'data: third', 'data: tail'];
+  const wire = `${expected[0]}\r\n\r\n${expected[1]}\n\n${expected[2]}\n\r\n${expected[3]}`;
+  const read = (chunks) => {
+    const reader = sse.makeFrameReader();
+    const frames = chunks.flatMap(chunk => reader.push(chunk));
+    frames.push(...reader.flush());
+    assert.deepEqual(reader.flush(), []);
+    return frames;
+  };
+  for (let split = 0; split <= wire.length; split++) {
+    assert.deepEqual(read([wire.slice(0, split), '', wire.slice(split)]), expected);
+  }
+  for (let size = 1; size <= 11; size++) {
+    const chunks = [];
+    for (let i = 0; i < wire.length; i += size) chunks.push(wire.slice(i, i + size));
+    assert.deepEqual(read(chunks), expected);
+  }
+  assert.deepEqual(read(['\n\n', '  ']), ['']);
+});
+
+test("large fragmented SSE frames preserve all bytes", () => {
+  const reader = sse.makeFrameReader();
+  const chunk = 'x'.repeat(64);
+  reader.push('data: ');
+  for (let i = 0; i < 16384; i++) assert.deepEqual(reader.push(chunk), []);
+  assert.deepEqual(reader.push('\r\n\r\n'), ['data: ' + chunk.repeat(16384)]);
+});
+
+test("cancellable streams do not retain a promise reaction per consumed event", async () => {
+  // Isolate GC accounting from node:test's other tests. No accumulated response
+  // content: retained memory here should not grow with the number of events.
+  const { execFileSync } = await import('node:child_process');
+  const moduleUrl = new URL('../src/core/model-stream.js', import.meta.url).href;
+  const retained = Number(execFileSync(process.execPath, ['--expose-gc', '--input-type=module', '-e', `
+    import { consumeModelStream } from ${JSON.stringify(moduleUrl)};
+    const tick = () => new Promise(setImmediate);
+    const controller = new AbortController();
+    await tick(); globalThis.gc();
+    const before = process.memoryUsage().heapUsed;
+    async function* events() {
+      yield { type: 'message_start' };
+      for (let i = 0; i < 60000; i++) yield { type: 'message_delta', usage: { output_tokens: i } };
+      await tick(); globalThis.gc();
+      console.log(process.memoryUsage().heapUsed - before);
+      yield { type: 'message_stop' };
+    }
+    await consumeModelStream(events(), { signal: controller.signal, onEvent() {} });
+  `], { encoding: 'utf8' }));
+  assert.ok(retained < 12 * 1024 * 1024, `retained ${retained} bytes for content-free events`);
+});

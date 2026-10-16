@@ -153,6 +153,8 @@ function signature(snapshot) {
 
 /**
  * Observe RunState without returning invocation payloads.
+ * `concurrency` bounds simultaneous snapshots within each list() call (default 32).
+ * Separate snapshot/watch/list callers retain independent scheduling.
  *
  * A snapshot is a best-effort point-in-time view. `volatile: true` means it is not a
  * recovery or durability claim, even if `storage: "durable"` is recorded by the writer.
@@ -160,12 +162,14 @@ function signature(snapshot) {
  * which run IDs are authorized. `partial: true` means the observer saw missing, malformed,
  * unreadable, or internally inconsistent status/event persistence.
  */
-export function createRunObserver(vfs, { root = "/runs", interval = 100 } = {}) {
+export function createRunObserver(vfs, { root = "/runs", interval = 100, concurrency = 32 } = {}) {
   if (!vfs || typeof vfs.read !== "function" || typeof vfs.list !== "function" || typeof vfs.stat !== "function") {
     throw new TypeError("createRunObserver requires a VFS-like read/list/stat adapter");
   }
   validateRoot(root);
   if (!Number.isSafeInteger(interval) || interval < 1) throw error("observer interval must be a positive safe integer", "EINVAL");
+
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1) throw error("observer concurrency must be a positive safe integer", "EINVAL");
 
   async function assertRun(id) {
     id = validateId(id);
@@ -215,10 +219,16 @@ export function createRunObserver(vfs, { root = "/runs", interval = 100 } = {}) 
       .filter((entry) => entry && typeof entry.name === "string" && ID.test(entry.name) && (!entry.type || entry.type === "dir"))
       .map((entry) => entry.name)
       .sort();
-    const results = await Promise.all(ids.map(async (id) => {
-      try { return await snapshot(id); } catch (cause) {
-        if (cause?.code === "ENOENT") return null;
-        throw cause;
+    // Bound storage pressure independently of the number of persisted runs.
+    const results = new Array(ids.length);
+    let next = 0;
+    let stopped = false;
+    await Promise.all(Array.from({ length: Math.min(concurrency, ids.length) }, async () => {
+      while (!stopped && next < ids.length) {
+        const index = next++;
+        try { results[index] = await snapshot(ids[index]); } catch (cause) {
+          if (cause?.code !== "ENOENT") { stopped = true; throw cause; }
+        }
       }
     }));
     return results.filter(Boolean);
@@ -233,14 +243,15 @@ export function createRunObserver(vfs, { root = "/runs", interval = 100 } = {}) 
       while (true) {
         throwIfAborted(signal);
         const current = await snapshot(id);
-        const changed = previous === null || signature(current) !== previous;
+        const currentSignature = signature(current);
+        const changed = previous === null || currentSignature !== previous;
         if (changed && (first ? includeInitial : true)) {
           yield {
             ...current,
             events: current.events.filter((event) => event.seq > after),
           };
         }
-        previous = signature(current);
+        previous = currentSignature;
         first = false;
         if (untilTerminal && current.terminal) return;
         await sleep(interval, signal);
