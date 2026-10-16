@@ -1,4 +1,5 @@
 import { invokeOnce } from "./invocation.js";
+import { normalize } from "../kernel/paths.js";
 import { continueOnce } from "./workflow.js";
 import { executeToolCalls } from "./workflow-harness.js";
 
@@ -232,6 +233,12 @@ export function createWorkflowGraph({ storage, store, root = "/workflows" } = {}
   if (!store || typeof store.reserve !== "function") throw fail("workflow graph requires a RunStore", "EINVAL");
   if (typeof root !== "string" || !root.startsWith("/") || root.includes("//") || root.split("/").includes("..")) {
     throw fail("workflow graph root must be an absolute path", "EINVAL");
+  }
+  root = normalize(root);
+  const storeRoot = normalize(store.root ?? "/runs");
+  const overlaps = (a, b) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+  if (overlaps(root, storeRoot)) {
+    throw fail("workflow graph root must be separate from the run store root", "EINVAL");
   }
 
   const controllers = new Map();

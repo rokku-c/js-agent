@@ -11,6 +11,7 @@ const TERMINAL = new Set(["completed", "completed_with_tool_calls", "failed", "u
 const DURABLE_TERMINAL = new Set(["completed", "failed", "unknown", "cancelled"]);
 const STATUSES = new Set(["reserved", "started", ...TERMINAL]);
 const reservationLocks = new WeakMap();
+const storeBackends = new WeakMap();
 
 function error(message, code = "EINVAL", fields = {}) {
   const e = new Error(message);
@@ -458,7 +459,13 @@ export function createRunStore(vfs, { root = "/runs", mode = "volatile", lockTim
     lastError(id) { return lastErrors.get(validateId(id)) ?? null; },
     isReserved(id) { return owned.has(validateId(id)); },
   };
-  return Object.freeze(store);
+  const handle = Object.freeze(store);
+  storeBackends.set(handle, vfs);
+  return handle;
+}
+
+export function runStoreUses(storage, store) {
+  return storeBackends.get(store) === storage;
 }
 
 export { ID as RUN_ID_PATTERN };

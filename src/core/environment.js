@@ -1,7 +1,7 @@
 import { createView } from "../kernel/view.js";
 import { createServiceAuthority } from "../connectors/service-authority.js";
 import { normalize } from "../kernel/paths.js";
-import { createRunStore } from "./run-store.js";
+import { createRunStore, runStoreUses } from "./run-store.js";
 import { toolCatalog } from "./tool-resource.js";
 import { runWorkflow, inspectInvocation } from "./workflow-harness.js";
 import { createRunObserver } from "./run-observer.js";
@@ -74,6 +74,7 @@ function observerPath(root, value) {
  * `store` on the returned Environment is a trusted writer/recovery handle, not an
  * observer capability. Remount storage and construct a fresh store on restart.
  *
+ * `graphRoot`, when supplied, pins the workflow graph namespace to this environment.
  * Tool paths are an explicit catalog. Directory discovery is available only via
  * discoverTools(), which requires list authority and is never used by run().
  */
@@ -82,6 +83,7 @@ export function createEnvironment({
   storage = resources,
   store,
   root = store?.root ?? "/runs",
+  graphRoot,
   model,
   tools = {},
   permissions = {},
@@ -104,6 +106,7 @@ export function createEnvironment({
     toolAdapterByPath.set(adapter.path, adapter);
   }
   const runRoot = absolutePath(root, "root");
+  const configuredGraphRoot = graphRoot === undefined ? undefined : absolutePath(graphRoot, "graphRoot");
   if (store?.root !== undefined && absolutePath(store.root, "store.root") !== runRoot) {
     throw fail("root must match store.root");
   }
@@ -130,6 +133,9 @@ export function createEnvironment({
   const runObserver = createRunObserver(observerView, { root: runRoot, interval: observerInterval });
   const runStore = store ?? createRunStore(storage, { root: runRoot });
   if (!runStore || typeof runStore.reserve !== "function") throw fail("store must be a RunStore");
+  if (!runStoreUses(storage, runStore)) {
+    throw fail("store must use the environment storage adapter", "EINVAL");
+  }
 
   async function catalog() {
     return toolCatalog(toolsView, toolPaths);
@@ -192,6 +198,13 @@ export function createEnvironment({
     if (Object.prototype.hasOwnProperty.call(options, "storage")
       || Object.prototype.hasOwnProperty.call(options, "store")) {
       throw fail("Environment.createWorkflowGraph owns storage and store configuration");
+    }
+    if (configuredGraphRoot !== undefined) {
+      if (Object.prototype.hasOwnProperty.call(options, "root")
+        && absolutePath(options.root, "workflow graph root") !== configuredGraphRoot) {
+        throw fail("workflow graph root is fixed by the environment", "EACCES");
+      }
+      return createWorkflowGraph({ ...options, root: configuredGraphRoot, storage, store: runStore });
     }
     return createWorkflowGraph({ ...options, storage, store: runStore });
   }
