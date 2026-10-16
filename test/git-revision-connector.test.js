@@ -6,6 +6,11 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { tmpdir } from "./helpers.js";
 import { createGitRevisionConnector } from "../src/connectors/git-revision.js";
+import { Vfs } from "../src/kernel/vfs.js";
+import { createRunStore } from "../src/core/run-store.js";
+import { createRunObserver } from "../src/core/run-observer.js";
+import { createEnvironment } from "../src/core/environment.js";
+import { createWorkflowGraph } from "../src/core/workflow-graph.js";
 
 const exec = promisify(execFileCallback);
 
@@ -197,3 +202,148 @@ test("candidate invocation failures and post-commit edits cannot be activated", 
     await cleanup(fixtureValue);
   }
 });
+
+test("Git candidates compose with Environment, WorkflowGraph, and RunObserver", async () => {
+  const fixtureValue = await fixture();
+  const { connector } = fixtureValue;
+  let candidate;
+  try {
+    candidate = await connector.createCandidate({ id: "prompt-agent-candidate" });
+    await connector.editCandidate(candidate.id, [
+      { path: "prompt.md", content: "Review the candidate prompt.\n" },
+      {
+        path: "agent.json",
+        content: JSON.stringify({
+          model: "/models/reviewer",
+          context: ["/candidate/prompt.md"],
+          tools: [],
+        }, null, 2) + "\n",
+      },
+    ]);
+    await connector.commitCandidate(candidate.id, { message: "add candidate review prompt" });
+    await connector.runCheck(candidate.id, {
+      command: process.execPath,
+      args: ["-e", "const fs=require('node:fs'); JSON.parse(fs.readFileSync('agent.json')); if (!fs.readFileSync('prompt.md','utf8').includes('candidate prompt')) process.exit(2)"],
+      label: "candidate prompt and AgentSpec",
+    });
+
+    let candidateObservation;
+    const candidateInvocation = await connector.runCandidate(candidate.id, {
+      input: "candidate review",
+      invoke: async ({ worktree, revision }) => {
+        const app = await candidateApp(worktree, "candidate");
+        try {
+          const workflow = await app.environment.prepareWorkflow({
+            agent: "/candidate/agent.json",
+            input: "candidate review",
+          });
+          const result = await app.graph.run({ id: "candidate-review", root: workflow });
+          const root = result.root;
+          const observed = await app.observer.snapshot(root.id);
+          const watched = (await app.observer.watch(root.id).next()).value;
+          const graph = await app.graph.inspect("candidate-review");
+          candidateObservation = {
+            revision,
+            prompt: await app.environment.observe.read("/candidate/prompt.md"),
+            agent: JSON.parse(await app.environment.observe.read("/candidate/agent.json")),
+            graph: { status: graph.status, nodeStatus: graph.nodes[0].status },
+            run: { status: observed.status, eventKinds: watched.events.map((event) => event.kind) },
+          };
+          return { status: result.status, graph: candidateObservation.graph, run: candidateObservation.run };
+        } finally {
+          await app.close();
+        }
+      },
+    });
+
+    assert.equal(candidateInvocation.result.status, "completed");
+    assert.equal(candidateObservation.prompt, "Review the candidate prompt.\n");
+    assert.equal(candidateObservation.agent.model, "/models/reviewer");
+    assert.deepEqual(candidateObservation.agent.context, ["/candidate/prompt.md"]);
+    assert.deepEqual(candidateObservation.graph, { status: "completed", nodeStatus: "completed" });
+    assert.deepEqual(candidateObservation.run, { status: "completed", eventKinds: ["started", "completed"] });
+    assert.equal((await connector.readCandidate(candidate.id)).status, "validated");
+
+    const activation = await connector.activate(candidate.id, { activatedBy: "candidate-review" });
+    assert.equal(activation.active.candidateId, candidate.id);
+    assert.equal((await connector.activeRevision()).candidateId, candidate.id);
+
+    const future = await connector.runFuture({
+      id: "activated-review",
+      input: "future review",
+      invoke: async ({ worktree, revision, candidateId }) => {
+        assert.equal(worktree, candidate.worktree);
+        assert.equal(candidateId, candidate.id);
+        const app = await candidateApp(worktree, "future");
+        try {
+          const workflow = await app.environment.prepareWorkflow({
+            agent: "/candidate/agent.json",
+            input: "future review",
+          });
+          const result = await app.graph.run({ id: "future-review", root: workflow });
+          const watched = (await app.observer.watch(result.root.id).next()).value;
+          return {
+            status: result.status,
+            revision,
+            prompt: await app.environment.observe.read("/candidate/prompt.md"),
+            events: watched.events.map((event) => event.kind),
+          };
+        } finally {
+          await app.close();
+        }
+      },
+    });
+
+    assert.equal(future.result.status, "completed");
+    assert.equal(future.result.prompt, "Review the candidate prompt.\n");
+    assert.deepEqual(future.result.events, ["started", "completed"]);
+    assert.equal((await connector.readCandidate(candidate.id)).status, "activated");
+  } finally {
+    await cleanup(fixtureValue);
+  }
+});
+
+async function candidateApp(worktree, label) {
+  const storage = new Vfs();
+  await storage.mount("mem", "/");
+  await storage.mount("hostfs", "/candidate", { source: worktree, mode: "ro" });
+  await storage.mkdirp("/models");
+  await storage.write("/models/reviewer.json", JSON.stringify({ provider: "fixture", model: "reviewer" }), { create: true });
+
+  const store = createRunStore(storage, { root: "/runs" });
+  const model = {
+    path: "/models/reviewer",
+    async request(request, { resources }) {
+      const configuration = await resources.read("/models/reviewer.json");
+      return {
+        content: [{ type: "text", text: `${label}:${configuration}:${request.messages[0].content}` }],
+        stop_reason: "end_turn",
+      };
+    },
+  };
+  const environment = createEnvironment({
+    resources: storage,
+    storage,
+    store,
+    model: { path: model.path, adapter: model },
+    permissions: {
+      agent: [{ path: "/candidate/**", operations: ["read"] }],
+      model: [{ path: "/models/reviewer.json", operations: ["read"] }],
+      tools: [],
+      observer: [
+        { path: "/candidate/**", operations: ["read"] },
+        { path: "/runs/**", operations: ["stat", "list", "read"] },
+      ],
+    },
+  });
+  const graph = createWorkflowGraph({ storage, store, root: "/workflows" });
+  const observer = createRunObserver(environment.observe, { root: "/runs", interval: 1 });
+  return {
+    environment,
+    graph,
+    observer,
+    async close() {
+      await storage.umount("/candidate");
+    },
+  };
+}
