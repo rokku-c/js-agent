@@ -10,6 +10,7 @@ export { loadToolDefinition, toolCatalog } from './core/tool-resource.js';
 export { continueOnce, assembleContinuationRequest } from './core/workflow.js';
 
 export { InMemoryConnector, createInMemoryConnector } from "./connectors/in-memory.js";
+export { createGitRevisionConnector } from "./connectors/git-revision.js";
 export { executeToolCalls, inspectInvocation, runWorkflow } from './core/workflow-harness.js';
 export { createEnvironment } from './core/environment.js';
 export { createWorkflowGraph, inspectWorkflowGraph } from "./core/workflow-graph.js";
