@@ -227,60 +227,85 @@ export class InMemoryConnector {
   /**
    * Watch a path and its descendants. The returned object is an AsyncIterable, so callers
    * can stop it with `return()` or an AbortSignal without a connector-specific callback API.
+   *
+   * The queue is bounded because connector writes are synchronous from the watcher's point
+   * of view. Overflow rejects the pending/future `next()` calls with EOVERFLOW instead of
+   * silently dropping remote changes. Abort rejects pending and future reads, matching the
+   * observer watch contract; `return()` remains a normal clean close.
    */
-  watch(path, { signal = null, includeInitial = false } = {}) {
+  watch(path, { signal = null, includeInitial = false, maxQueue = 256 } = {}) {
     const target = pathOf(path, "watch");
+    if (!Number.isSafeInteger(maxQueue) || maxQueue < 1) {
+      throw new TypeError("watch maxQueue must be a positive safe integer");
+    }
     const queue = [];
-    let pending = null;
+    const waiters = [];
     let closed = false;
+    let closeError = null;
     let abortListener;
 
+    const abortReason = () => {
+      if (signal?.reason instanceof Error) return signal.reason;
+      const error = new Error("connector watch cancelled");
+      error.name = "AbortError";
+      error.code = "ABORT_ERR";
+      return error;
+    };
     const cleanup = () => {
       this.#watchers.delete(onChange);
       signal?.removeEventListener("abort", abortListener);
-      if (pending) {
-        const waiter = pending;
-        pending = null;
-        waiter.reject(signal?.reason ?? new DOMException("The operation was aborted", "AbortError"));
-      }
     };
-    const close = () => {
+    const close = (error = null) => {
       if (closed) return;
       closed = true;
+      closeError = error;
+      queue.length = 0;
       cleanup();
+      while (waiters.length) {
+        const waiter = waiters.shift();
+        if (error) waiter.reject(error);
+        else waiter.resolve({ value: undefined, done: true });
+      }
     };
-    const onChange = (change) => {
+    const enqueue = (change) => {
       if (closed || !isUnder(target, change.path)) return;
-      if (pending) {
-        const waiter = pending;
-        pending = null;
-        waiter.resolve({ value: clone(change), done: false });
-      } else queue.push(clone(change));
+      if (waiters.length) {
+        waiters.shift().resolve({ value: clone(change), done: false });
+        return;
+      }
+      if (queue.length >= maxQueue) {
+        const error = new Error(`connector watch queue exceeded maxQueue (${maxQueue})`);
+        error.code = "EOVERFLOW";
+        close(error);
+        return;
+      }
+      queue.push(clone(change));
     };
+    const onChange = (change) => enqueue(change);
 
     if (signal?.aborted) {
-      closed = true;
+      close(abortReason());
     } else {
       this.#watchers.add(onChange);
-      abortListener = () => close();
+      abortListener = () => close(abortReason());
       signal?.addEventListener("abort", abortListener, { once: true });
-      if (includeInitial) {
-        queue.push({
-          kind: "snapshot",
-          path: target,
-          source: this.#source,
-          at: new Date(nowValue(this.#clock)).toISOString(),
-        });
-      }
+      if (includeInitial) enqueue({
+        kind: "snapshot",
+        path: target,
+        source: this.#source,
+        at: new Date(nowValue(this.#clock)).toISOString(),
+      });
     }
 
     return {
       next: () => {
+        if (closeError) return Promise.reject(closeError);
         if (queue.length) return Promise.resolve({ value: queue.shift(), done: false });
         if (closed) return Promise.resolve({ value: undefined, done: true });
-        return new Promise((resolve, reject) => { pending = { resolve, reject }; });
+        return new Promise((resolve, reject) => { waiters.push({ resolve, reject }); });
       },
       return: async () => { close(); return { value: undefined, done: true }; },
+      throw: async (reason) => { close(reason instanceof Error ? reason : new Error(String(reason))); throw reason; },
       [Symbol.asyncIterator]() { return this; },
     };
   }

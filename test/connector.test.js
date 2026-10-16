@@ -119,6 +119,34 @@ test("external connector exposes files, provider metadata, status, and scoped wa
   assert.throws(() => readOnly.watch("/ssh/build-server"), { code: "EACCES" });
 });
 
+test("connector watch preserves concurrent consumers and makes abort and overflow explicit", async () => {
+  const source = createInMemoryConnector({ resources: {} });
+  const resources = fullView(source);
+  const watch = resources.watch("/remote", { maxQueue: 4 });
+  const first = watch.next();
+  const second = watch.next();
+
+  await resources.write("/remote/one.txt", "one", { create: true });
+  await resources.write("/remote/two.txt", "two", { create: true });
+  assert.equal((await first).value.path, "/remote/one.txt");
+  assert.equal((await second).value.path, "/remote/two.txt");
+  await watch.return();
+  assert.deepEqual(await watch.next(), { value: undefined, done: true });
+
+  const controller = new AbortController();
+  const reason = new Error("remote watch cancelled");
+  const aborted = resources.watch("/remote", { signal: controller.signal });
+  const pending = aborted.next();
+  controller.abort(reason);
+  await assert.rejects(pending, (error) => error === reason);
+  await assert.rejects(aborted.next(), (error) => error === reason);
+
+  const overflowing = resources.watch("/remote", { maxQueue: 1 });
+  await resources.write("/remote/three.txt", "three", { create: true });
+  await resources.write("/remote/four.txt", "four", { create: true });
+  await assert.rejects(overflowing.next(), { code: "EOVERFLOW" });
+});
+
 test("live and pinned references work against an external file, with revision conflicts", async () => {
   const source = connector();
   const resources = fullView(source);
