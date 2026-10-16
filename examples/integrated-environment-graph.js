@@ -2,9 +2,7 @@
 // A small end-user application that composes an Environment, WorkflowGraph, and
 // redacted RunObserver into one live report.
 import { Vfs } from "js-agent/kernel";
-import { createRunStore } from "js-agent/runtime";
-import { createRunObserver } from "js-agent/runtime";
-import { createEnvironment, createWorkflowGraph } from "js-agent/runtime";
+import { createEnvironment } from "js-agent/runtime";
 
 const agent = {
   model: "/models/reviewer",
@@ -62,7 +60,6 @@ export async function createIntegratedApp({ holdBranches = true } = {}) {
   }
   await storage.write("/workspace/brief.md", "Ship the small API, keep state observable, and document uncertainty.\n", { create: true });
 
-  const store = createRunStore(storage, { root: "/runs" });
   let activeBranches = 0;
   let maxConcurrentBranches = 0;
   let resolveBranchesReady;
@@ -108,7 +105,6 @@ export async function createIntegratedApp({ holdBranches = true } = {}) {
   const environment = createEnvironment({
     resources: storage,
     storage,
-    store,
     model: { path: model.path, adapter: model },
     tools: {
       paths: ["/tools/summary", "/tools/risks"],
@@ -140,14 +136,12 @@ export async function createIntegratedApp({ holdBranches = true } = {}) {
     },
   });
 
-  const graph = createWorkflowGraph({ storage, store, root: "/workflows" });
-  // Wrapping the Environment's observer view preserves its permission boundary while
-  // adding redacted snapshots and polling for a UI.
-  const observer = createRunObserver(environment.observe, { root: "/runs", interval: 1 });
+  const graph = environment.createWorkflowGraph({ root: "/workflows" });
+  const observer = environment.observer;
 
   return {
     storage,
-    store,
+    store: environment.store,
     environment,
     graph,
     observer,

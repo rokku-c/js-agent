@@ -5,7 +5,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Vfs } from "../src/kernel/vfs.js";
-import { createEnvironment, createRunStore, createWorkflowGraph } from "../src/runtime.js";
+import { createEnvironment, createRunStore } from "../src/runtime.js";
 
 const agent = { model: "/models/reviewer", context: ["/workspace/brief.md"], tools: [] };
 const observerPermissions = [{ path: "/runs/**", operations: ["stat", "list", "read"] }];
@@ -28,7 +28,6 @@ function environmentFor(storage, requestStarted, gate) {
     resources: storage,
     storage,
     store: createRunStore(storage, { root: "/runs" }),
-    root: "/runs",
     observerInterval: 1,
     model: {
       path: "/models/reviewer",
@@ -75,7 +74,7 @@ export async function runDurableRestartObserver({ log = console.log } = {}) {
     // The graph owns the same store that the Environment uses; prepareWorkflow supplies it
     // after the catalog boundary has been assembled.
     const workflow = await environment1.prepareWorkflow({ agent, input: "Review the release." });
-    const graph = createWorkflowGraph({ storage: storage1, store: workflow.store, root: "/workflows" });
+    const graph = environment1.createWorkflowGraph({ root: "/workflows" });
     const controller = new AbortController();
     const running = graph.startRoot({ graphId: "durable-restart", ...workflow, signal: controller.signal });
     await requestStarted;
@@ -90,7 +89,7 @@ export async function runDurableRestartObserver({ log = console.log } = {}) {
     const storage2 = await openStorage(directory);
     const environment2 = environmentFor(storage2);
     const workflow2 = await environment2.prepareWorkflow({ agent, input: "unused after recovery" });
-    const graph2 = createWorkflowGraph({ storage: storage2, store: workflow2.store, root: "/workflows" });
+    const graph2 = environment2.createWorkflowGraph({ root: "/workflows" });
     const observer2 = environment2.observer;
     const persisted = publicRun(await observer2.snapshot("durable-restart-root"));
     const inspected = await graph2.inspect("durable-restart");

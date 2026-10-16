@@ -163,3 +163,21 @@ test("createEnvironment requires exact trusted adapter paths and does not discov
     { code: "EACCES" },
   );
 });
+
+test("Environment binds workflow graph storage and runs ordered recovery", async () => {
+  const storage = await fixture();
+  const env = createEnvironment({
+    resources: storage,
+    storage,
+    model: {
+      path: "/models/reviewer",
+      adapter: { async request() { return { content: [{ type: "text", text: "done" }] }; } },
+    },
+    permissions: permissions(),
+  });
+  const graph = env.createWorkflowGraph({ root: "/workflows" });
+  assert.equal(graph.root, "/workflows");
+  assert.equal((await env.prepareWorkflow()).store, env.store);
+  assert.throws(() => env.createWorkflowGraph({ storage, store: env.store }), /owns storage and store/);
+  await assert.rejects(() => env.recoverWorkflow({}, "missing"), /WorkflowGraph/);
+});

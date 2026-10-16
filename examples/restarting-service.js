@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Vfs } from "js-agent/kernel";
-import { createEnvironment, createRunStore, createRunObserver, createView, createWorkflowGraph } from "js-agent/runtime";
+import { createEnvironment, createRunStore } from "js-agent/runtime";
 
 const root = "/state/runs";
 const graphId = "restart";
@@ -32,7 +32,7 @@ async function openService(directory, request) {
     model: { path: agent.model, adapter: request },
     permissions: { observer: observerGrants },
   });
-  const graph = createWorkflowGraph({ storage, store: environment.store });
+  const graph = environment.createWorkflowGraph();
   return { storage, environment, graph };
 }
 
@@ -80,8 +80,7 @@ export async function runRestartingService({ log = console.log } = {}) {
       dispatchesAfterRestart++;
       throw new Error("recovery must not redispatch a model request");
     });
-    // A separate UI needs only this facade, not storage, Environment, or its trusted store.
-    const observer = createRunObserver(createView(storage, { grants: observerGrants }), { root });
+    const observer = environment.observer;
     const before = await observer.snapshot(runId);
     // Reconcile authoritative invocation journals BEFORE the graph's derived index.
     const recovery = await environment.store.recover(runId);

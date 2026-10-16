@@ -25,8 +25,9 @@ metadata without request, plan, response, or tool payloads.
 
 The next API layers are also public from `js-agent/runtime`:
 
-- `createWorkflowGraph({ storage, store })` coordinates a root invocation and keyed
-  continuation branches. See [the graph example](../examples/workflow-graph.js).
+- `environment.createWorkflowGraph({ root })` coordinates a root invocation and keyed
+  continuation branches using the Environment's storage and RunStore. See [the graph example](../examples/workflow-graph.js).
+  The standalone `createWorkflowGraph({ storage, store })` remains available for lower-level composition.
 - `createGitRevisionConnector({ repository, stateDir })` manages candidate worktrees, checks,
   candidate invocations, and compare-and-swap activation. Its callback receives captured
   revision provenance. See [versioning](./versioning.md).
@@ -61,6 +62,8 @@ Restart order matters:
 2. Remount the same backend and recreate all process-local objects, permissions, and adapters.
 3. Recover the affected invocations with `environment.store.recover(id)`.
 4. Reconcile the derived graph index with `graph.recover(graphId)`.
+   `environment.recoverWorkflow(graph, graphId)` performs steps 3 and 4 in that order for
+   every uncertain graph node; it never re-dispatches an interrupted request.
 5. Read the redacted state through `environment.observer` or a standalone
    `createRunObserver(createView(storage, { grants }), { root })`.
 

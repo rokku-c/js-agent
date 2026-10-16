@@ -5,6 +5,7 @@ import { createRunStore } from "./run-store.js";
 import { toolCatalog } from "./tool-resource.js";
 import { runWorkflow, inspectInvocation } from "./workflow-harness.js";
 import { createRunObserver } from "./run-observer.js";
+import { createWorkflowGraph } from "./workflow-graph.js";
 
 const VIEW_NAMES = ["agent", "model", "tools", "observer"];
 
@@ -182,6 +183,35 @@ export function createEnvironment({
     return runWorkflow(await prepareWorkflow(options));
   }
 
+  function createGraph(options = {}) {
+    object(options, "workflow graph options");
+    if (Object.prototype.hasOwnProperty.call(options, "storage")
+      || Object.prototype.hasOwnProperty.call(options, "store")) {
+      throw fail("Environment.createWorkflowGraph owns storage and store configuration");
+    }
+    return createWorkflowGraph({ ...options, storage, store: runStore });
+  }
+
+  /**
+   * Recover the uncertain invocation claims owned by a graph, then reconcile its
+   * derived index. The ordering is deliberate: RunStore journals are authoritative
+   * for invocation outcomes, while graph.json only records coordination state.
+   * An interrupted dispatch remains unknown and is never replayed here.
+   */
+  async function recoverWorkflow(graph, graphId, options = {}) {
+    if (!graph || typeof graph.inspect !== "function" || typeof graph.recover !== "function") {
+      throw fail("recoverWorkflow requires a WorkflowGraph");
+    }
+    object(options, "workflow recovery options");
+    const inspected = await graph.inspect(graphId);
+    const runs = [];
+    for (const node of inspected.uncertainNodes) {
+      runs.push(await runStore.recover(node.invocationId, options));
+    }
+    const recoveredGraph = await graph.recover(graphId);
+    return { graph: recoveredGraph, runs, inspected };
+  }
+
   const observe = Object.freeze({
     read: (path, options) => observerView.read(path, options),
     list: (path, options) => observerView.list(path, options),
@@ -226,6 +256,8 @@ export function createEnvironment({
     store: runStore,
     run,
     prepareWorkflow,
+    createWorkflowGraph: createGraph,
+    recoverWorkflow,
     catalog,
     discoverTools,
     observe,
