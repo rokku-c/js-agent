@@ -213,7 +213,10 @@ export function createEnvironment({
    * Recover the uncertain invocation claims owned by a graph, then reconcile its
    * derived index. The ordering is deliberate: RunStore journals are authoritative
    * for invocation outcomes, while graph.json only records coordination state.
-   * An interrupted dispatch remains unknown and is never replayed here.
+   * An interrupted dispatch remains unknown and is never replayed here. A graph
+   * claim can precede run reservation; an absent run is reported as missing and
+   * reconciled to unknown without creating an invocation or replaying it.
+   * The caller must stop or fence the previous writer before recovery.
    */
   async function recoverWorkflow(graph, graphId, options = {}) {
     if (!graph || typeof graph.inspect !== "function" || typeof graph.recover !== "function") {
@@ -223,6 +226,18 @@ export function createEnvironment({
     const inspected = await graph.inspect(graphId);
     const runs = [];
     for (const node of inspected.uncertainNodes) {
+      if (runStore.mode === "durable" && node.persistedStatus === "missing") {
+        const path = `${runRoot}/${node.invocationId}`;
+        try {
+          // A missing status file alone does not imply an absent invocation:
+          // its journal may still contain a committed outcome worth recovering.
+          await storage.stat(path);
+        } catch (error) {
+          if (error?.code !== "ENOENT") throw error;
+          runs.push({ id: node.invocationId, path, status: "unknown", recovered: false, missing: true });
+          continue;
+        }
+      }
       runs.push(await runStore.recover(node.invocationId, options));
     }
     const recoveredGraph = await graph.recover(graphId);

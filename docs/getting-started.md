@@ -47,6 +47,10 @@ It kills a writer after dispatch, waits for its exit, remounts the same hostfs d
 then rebuilds the Environment, RunStore, graph coordinator, and read-only observer. The
 interrupted invocation becomes `unknown`; recovery does not call the model again.
 
+For journal graph persistence, concurrent branches, and a separately persisted external
+receipt, run `node examples/journal-release-service.js`. Its [application report](./real-use-journal-service.md)
+describes both the dispatch crash and the earlier graph-claim/run-reservation crash.
+
 For a durable service, explicitly supply `createRunStore(storage, { root, mode: "durable" })`
 to `createEnvironment({ resources, storage, store, model, permissions })`. The default
 remains volatile, even on hostfs. Durable admission requires declared storage capabilities
@@ -63,15 +67,22 @@ Restart order matters:
 3. Recover the affected invocations with `environment.store.recover(id)`.
 4. Reconcile the derived graph index with `graph.recover(graphId)`.
    `environment.recoverWorkflow(graph, graphId)` performs steps 3 and 4 in that order for
-   every uncertain graph node; it never re-dispatches an interrupted request.
+   every uncertain graph node; it never re-dispatches an interrupted request. A graph
+   claim can exist before its run directory. In that case the helper returns a run entry
+   with `status: "unknown", recovered: false, missing: true` and reconciles the graph
+   without manufacturing a run. A missing status file in an existing run still triggers
+   journal recovery; storage permission/I/O errors propagate.
 5. Read the redacted state through `environment.observer` or a standalone
    `createRunObserver(createView(storage, { grants }), { root })`.
 
 If a dead writer left `.writer-lock`, `recover(id, { takeover: true })` can explicitly remove
 it, **only after external confirmation that the previous writer cannot continue**. No lease,
 fencing token, automatic safe takeover, or distributed transaction is provided. Graph
-snapshots do not inherit RunStore's durable journal protocol; missing/corrupt graphs still
-require application handling. The example tests process loss, not power-loss durability.
+persistence has its own commit protocol.
+`environment.createWorkflowGraph({ persistence: "journal" })` selects delta records and
+an atomic commit pointer. Stale graph locks fail
+with `EBUSY`; missing/corrupt graphs still require application handling. The examples test
+process loss, not power-loss durability.
 
 Observers and permissions are distinct: redaction removes payloads from returned snapshots,
 but a broad `/runs/**` read grant still authorizes raw payload reads on that View. The example
