@@ -1,7 +1,7 @@
 // Run with: node examples/one-request.js
 // The core APIs receive their IO and model from the host; this example uses memory only.
-import { Vfs } from '../src/kernel/vfs.js';
-import { createView, createRunStore, invokeOnce } from '../src/runtime.js';
+import { Vfs } from 'js-agent/kernel';
+import { createView, createRunStore, invokeOnce } from 'js-agent/runtime';
 
 const storage = new Vfs();
 await storage.mount('mem', '/');

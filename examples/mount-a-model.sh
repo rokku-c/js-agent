@@ -6,6 +6,7 @@
 
 set -u
 ROOT_JS="$(cd "$(dirname "$0")/.." && pwd)/bin/js-agent"
+js_agent() { node "$ROOT_JS" "$@"; }
 TOKEN="${ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_API_KEY:-}}"
 BASE="${ANTHROPIC_BASE_URL:-https://api.anthropic.com}"
 HOST=$(node -e "console.log(new URL(process.argv[1]).hostname)" "$BASE")
@@ -24,12 +25,12 @@ node "$ROOT_JS" -e 'ls /dev' || true
 
 note ""
 note "2. the model mounted, but nothing to reach it with"
-$J --mount "ai:/dev/providers/ai,vendor=anthropic,models=$MODEL" \
+js_agent --mount "ai:/dev/providers/ai,vendor=anthropic,models=$MODEL" \
    -e "write /dev/providers/ai/type/api/anthropic/messages/model/$MODEL '{\"max_tokens\":8,\"messages\":[]}'" 2>&1 | head -3
 
 note ""
 note "3. add a credential, still no network"
-$J --mount "secret:/dev/secrets,env=ANTHROPIC_AUTH_TOKEN" \
+js_agent --mount "secret:/dev/secrets,env=ANTHROPIC_AUTH_TOKEN" \
    --mount "ai:/dev/providers/ai,vendor=anthropic,models=$MODEL,token-file=/dev/secrets/ANTHROPIC_AUTH_TOKEN" \
    -e "write /dev/providers/ai/type/api/anthropic/messages/model/$MODEL '{\"max_tokens\":8,\"messages\":[]}'" 2>&1 | head -3
 
@@ -42,14 +43,14 @@ fi
 
 note "4. all three mounts — and the same line now answers"
 green "descriptor:"
-$J --mount "secret:/dev/secrets,env=ANTHROPIC_AUTH_TOKEN" \
+js_agent --mount "secret:/dev/secrets,env=ANTHROPIC_AUTH_TOKEN" \
    --mount "net:/dev/net,allow=$HOST" \
    --mount "ai:/dev/providers/ai,vendor=anthropic,models=$MODEL,token-file=/dev/secrets/ANTHROPIC_AUTH_TOKEN,url=$BASE" \
    -e "cat /dev/providers/ai/type/api/anthropic/messages/model/$MODEL" 2>&1 | head -12
 
 note ""
 green "and a reply, by writing a request to the file:"
-$J --mount "secret:/dev/secrets,env=ANTHROPIC_AUTH_TOKEN" \
+js_agent --mount "secret:/dev/secrets,env=ANTHROPIC_AUTH_TOKEN" \
    --mount "net:/dev/net,allow=$HOST" \
    --mount "ai:/dev/providers/ai,vendor=anthropic,models=$MODEL,token-file=/dev/secrets/ANTHROPIC_AUTH_TOKEN,url=$BASE" \
    -e "write /dev/providers/ai/type/api/anthropic/messages/model/$MODEL '{\"max_tokens\":32,\"messages\":[{\"role\":\"user\",\"content\":\"say pong and nothing else\"}]}'" 2>&1 | head -20

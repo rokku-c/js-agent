@@ -1,8 +1,8 @@
 // Run with: node examples/environment-app.js
 // A complete local application: resource-backed context and tool metadata, explicit
 // trusted adapters, and a run observer with a separate permission view.
-import { Vfs } from "../src/kernel/vfs.js";
-import { createEnvironment } from "../src/runtime.js";
+import { Vfs } from "js-agent/kernel";
+import { createEnvironment } from "js-agent/runtime";
 
 const resources = new Vfs();
 await resources.mount("mem", "/");

@@ -1,8 +1,7 @@
 // Run with: node examples/workflow-graph.js
 // A deterministic persisted graph: one root request, two keyed branches, and a join.
-import { Vfs } from "../src/kernel/vfs.js";
-import { createRunStore } from "../src/core/run-store.js";
-import { createWorkflowGraph } from "../src/core/workflow-graph.js";
+import { Vfs } from "js-agent/kernel";
+import { createRunStore, createWorkflowGraph } from "js-agent/runtime";
 
 const storage = new Vfs();
 await storage.mount("mem", "/");

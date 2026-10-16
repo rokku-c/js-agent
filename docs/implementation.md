@@ -5,7 +5,7 @@ milestone and the boundary between available code and planned behavior.
 
 ## First milestone: one request with observable inputs and output
 
-The public experimental entrypoint is `js-agent/runtime`. Its primitives are intentionally
+The public runtime entrypoint is `js-agent/runtime`. Its primitives are intentionally
 independent: callers can use a resource View or reference resolver without running an agent.
 
 | Primitive | Responsibility | Boundary |

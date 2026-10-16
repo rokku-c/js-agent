@@ -1,9 +1,8 @@
 // Run with: node examples/workflow-harness.js
 // A deterministic, offline multi-step workflow: two model tool calls, one continuation,
 // and two independent workflows sharing the same RunStore.
-import { Vfs } from "../src/kernel/vfs.js";
-import { createRunStore } from "../src/core/run-store.js";
-import { inspectInvocation, runWorkflow } from "../src/core/workflow-harness.js";
+import { Vfs } from "js-agent/kernel";
+import { createRunStore, inspectInvocation, runWorkflow } from "js-agent/runtime";
 
 const storage = new Vfs();
 await storage.mount("mem", "/");

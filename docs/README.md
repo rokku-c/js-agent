@@ -9,21 +9,22 @@ fundamentally a long-lived session object.
 
 This is a design specification, not a claim that every part is implemented in the current
 prototype. The implementation should be judged against the invariants in this document. The
-legacy prototype remains a compatibility starting point. The experimental runtime now provides
-file-operation Views and one-request records; durable recovery, generic connector delegation,
-and automatic continuations remain planned.
+legacy prototype remains a compatibility starting point. The runtime provides file-operation Views, one-request records, explicit Environment and
+workflow graph composition, and a Git revision connector; durable recovery, generic connector
+delegation, and automatic continuation scheduling remain planned.
 
-For implemented APIs and current limitations, start with [Implementation status](./implementation.md).
+For implemented APIs and current limitations, start with [Implementation status](./implementation.md). To run the shortest complete application, see [Getting started](./getting-started.md).
 
 ## Contents
 
-1. [Architecture](./architecture.md) — the layered system and its boundaries.
-2. [Resource Model](./resource-model.md) — resources, drivers, namespaces, views, and references.
-3. [Execution Model](./execution-model.md) — agent definitions, invocations, context resolution, tools, and observable state.
-4. [Runtime and Connectors](./runtime-and-connectors.md) — JavaScript composition, host adapters, remote resources, and applications.
-5. [Versioning and Self-Modification](./versioning.md) — Git worktrees, revisions, environment changes, and activation.
-6. [Protocols and Examples](./protocols.md) — compact schemas, complete flows, and conformance scenarios.
-7. [Appendix](./appendix.md) — definitions, glossary, design principles, invariants, and open decisions.
+1. [Getting started](./getting-started.md) — a complete offline application using the public exports.
+2. [Architecture](./architecture.md) — the layered system and its boundaries.
+3. [Resource Model](./resource-model.md) — resources, drivers, namespaces, views, and references.
+4. [Execution Model](./execution-model.md) — agent definitions, invocations, context resolution, tools, and observable state.
+5. [Runtime and Connectors](./runtime-and-connectors.md) — JavaScript composition, host adapters, remote resources, and applications.
+6. [Versioning and Self-Modification](./versioning.md) — Git worktrees, revisions, environment changes, and activation.
+7. [Protocols and Examples](./protocols.md) — compact schemas, complete flows, and conformance scenarios.
+8. [Appendix](./appendix.md) — definitions, glossary, design principles, invariants, and open decisions.
 
 ## The four public concepts
 

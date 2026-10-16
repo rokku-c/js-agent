@@ -1,10 +1,10 @@
 // Run with: node examples/integrated-environment-graph.js
 // A small end-user application that composes an Environment, WorkflowGraph, and
 // redacted RunObserver into one live report.
-import { Vfs } from "../src/kernel/vfs.js";
-import { createRunStore } from "../src/core/run-store.js";
-import { createRunObserver } from "../src/runtime.js";
-import { createEnvironment, createWorkflowGraph } from "../src/runtime.js";
+import { Vfs } from "js-agent/kernel";
+import { createRunStore } from "js-agent/runtime";
+import { createRunObserver } from "js-agent/runtime";
+import { createEnvironment, createWorkflowGraph } from "js-agent/runtime";
 
 const agent = {
   model: "/models/reviewer",
