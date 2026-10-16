@@ -3,3 +3,6 @@ export { createView } from './kernel/view.js';
 export { resolveReference, resolveArguments } from './core/references.js';
 export { createRunStore } from './core/run-store.js';
 export { invokeOnce } from './core/invocation.js';
+
+export { buildContinuation, continuationPlan } from './core/continuation.js';
+export { loadToolDefinition, loadToolResource, toolCatalog } from './core/tool-resource.js';

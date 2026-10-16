@@ -63,8 +63,10 @@ function adapterAt(adapters, path, kind) {
 async function resolved(resources, ref, label, signal) {
   try {
     return await resolveReference(resources, ref, { maxBytes: MAX_PLAN_BYTES, signal });
-  } catch (e) {
-    e.message = `${label}: ${e.message}`;
+  } catch (cause) {
+    if (signal?.aborted) throw fail("invocation cancelled", "ABORT_ERR");
+    const e = fail(`${label}: ${cause?.message ?? String(cause)}`, cause?.code ?? "EIO");
+    if (cause?.path) e.path = cause.path;
     throw e;
   }
 }
@@ -203,6 +205,10 @@ export async function invokeOnce({ resources, agent, input, model, tools = [], s
     // the captured path and cannot be changed during the awaited reference reads.
     await store.materialize(run.id, { request, plan });
   } catch (e) {
+    if (signal?.aborted || e?.code === "ABORT_ERR") {
+      await store.fail(run.id, "cancelled", e).catch(() => undefined);
+      return { ...run, status: "cancelled", response: null };
+    }
     await recordAdmissionFailure(store, run, e);
     throw e;
   }
@@ -254,12 +260,12 @@ export async function invokeOnce({ resources, agent, input, model, tools = [], s
 
   const toolCalls = storedResponse.content.filter((part) => part?.type === "tool_use").map((part) => clone(part, "tool call"));
   try {
-    await store.finish(run.id, storedResponse, toolCalls.length ? toolCalls : undefined);
+    const finished = await store.finish(run.id, storedResponse, toolCalls.length ? toolCalls : undefined);
+    return { ...run, status: finished.status, response: storedResponse, ...(toolCalls.length ? { toolCalls } : {}) };
   } catch (e) {
     await store.fail(run.id, "unknown", e).catch(() => undefined);
     throw e;
   }
-  return { ...run, status: "completed", response: storedResponse, ...(toolCalls.length ? { toolCalls } : {}) };
 }
 
 function referenceName(ref) {

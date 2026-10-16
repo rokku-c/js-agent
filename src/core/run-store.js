@@ -3,7 +3,8 @@
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
-const TERMINAL = new Set(["completed", "failed", "unknown", "cancelled"]);
+const TERMINAL = new Set(["completed", "completed_with_tool_calls", "failed", "unknown", "cancelled"]);
+const reservationLocks = new WeakMap();
 function error(message, code = "EINVAL") {
   const e = new Error(message);
   e.code = code;
@@ -64,6 +65,18 @@ export function createRunStore(vfs, { root = "/runs", mode = "volatile" } = {}) 
   const queues = new Map();
   const sequence = new Map();
   const lastErrors = new Map();
+  const lockMap = reservationLocks.get(vfs) ?? new Map();
+  reservationLocks.set(vfs, lockMap);
+
+  const withReservationLock = (key, operation) => {
+    const previous = lockMap.get(key) ?? Promise.resolve();
+    const current = previous.then(operation, operation);
+    const tracked = current.then(() => undefined, () => undefined).finally(() => {
+      if (lockMap.get(key) === tracked) lockMap.delete(key);
+    });
+    lockMap.set(key, tracked);
+    return current;
+  };
 
   const queue = (id, operation) => {
     const previous = queues.get(id) ?? Promise.resolve();
@@ -147,30 +160,34 @@ export function createRunStore(vfs, { root = "/runs", mode = "volatile" } = {}) 
     async reserve(requestedId, { request, plan } = {}) {
       const id = requestedId == null ? nextId() : validateId(requestedId);
       if (owned.has(id)) throw error(`run id already reserved: ${id}`, "EEXIST");
-      // Mark this store's in-flight reservation before yielding. Other calls in this store
-      // cannot race it; other stores are stopped by the filesystem's atomic mkdir below.
-      owned.add(id);
-      try {
-        await vfs.mkdirp(root);
-        const runPath = pathJoin(root, id);
-        // mkdir is the ownership operation. The exists check also accommodates the
-        // repository's in-memory driver, whose mkdir is intentionally mkdir -p-like and
-        // does not report EEXIST for an existing directory.
-        if (typeof vfs.exists === "function" && await vfs.exists(runPath)) throw error(`run id already exists: ${id}`, "EEXIST");
-        await vfs.mkdir(runPath);
-        states.set(id, "reserved");
-        await writeSnapshot(pathJoin(root, id, "request.json"), request);
-        await writeSnapshot(pathJoin(root, id, "plan.json"), plan);
-        await writeStatus(id, { status: "reserved" });
-      } catch (e) {
-        lastErrors.set(id, e);
-        // If this store did not create the directory, it does not own the run.
-        if (!states.has(id)) owned.delete(id);
-        throw e;
-      }
-      return { id, path: pathJoin(root, id), status: "reserved" };
+      return withReservationLock(`${root}/${id}`, async () => {
+        if (owned.has(id)) throw error(`run id already reserved: ${id}`, "EEXIST");
+        owned.add(id);
+        let created = false;
+        try {
+          await vfs.mkdirp(root);
+          const runPath = pathJoin(root, id);
+          if (typeof vfs.exists === "function" && await vfs.exists(runPath)) {
+            throw error(`run id already exists: ${id}`, "EEXIST");
+          }
+          await vfs.mkdir(runPath);
+          created = true;
+          await writeSnapshot(pathJoin(root, id, "request.json"), request);
+          await writeSnapshot(pathJoin(root, id, "plan.json"), plan);
+          await writeStatus(id, { status: "reserved" });
+          states.set(id, "reserved");
+        } catch (e) {
+          lastErrors.set(id, e);
+          states.delete(id);
+          owned.delete(id);
+          if (created && typeof vfs.remove === "function") {
+            await vfs.remove(pathJoin(root, id), { recursive: true }).catch(() => {});
+          }
+          throw e;
+        }
+        return { id, path: pathJoin(root, id), status: "reserved" };
+      });
     },
-
     async materialize(id, { request, plan } = {}) {
       id = assertWriteId(id);
       return queue(id, async () => {
@@ -198,15 +215,16 @@ export function createRunStore(vfs, { root = "/runs", mode = "volatile" } = {}) 
         if (states.get(id) !== "started") throw error(`run ${id} cannot finish from ${states.get(id)}`, "EALREADY");
         await writeSnapshot(pathJoin(root, id, "response.json"), response);
         await appendEvent(id, "completed", toolCalls === undefined ? {} : { toolCalls });
-        await writeStatus(id, { status: "completed" });
-        states.set(id, "completed");
-        return { id, path: pathJoin(root, id), status: "completed" };
+        const status = toolCalls?.length ? "completed_with_tool_calls" : "completed";
+        await writeStatus(id, { status });
+        states.set(id, status);
+        return { id, path: pathJoin(root, id), status };
       });
     },
 
     async fail(id, state, cause) {
       id = assertWriteId(id);
-      if (!TERMINAL.has(state) || state === "completed") throw error(`invalid failure state: ${state}`, "EINVAL");
+      if (!TERMINAL.has(state) || state === "completed" || state === "completed_with_tool_calls") throw error(`invalid failure state: ${state}`, "EINVAL");
       return queue(id, async () => {
         const current = states.get(id);
         if (TERMINAL.has(current)) throw error(`run ${id} is already terminal: ${current}`, "EALREADY");

@@ -15,6 +15,9 @@ independent: callers can use a resource View or reference resolver without runni
 | `resolveArguments(resources, input)` | Resolve explicit `$ref` objects inside arguments | Ordinary strings remain literal; `$literal` escapes structured data |
 | `createRunStore(storage)` | Record request, materialized plan, response, status and events | Volatile milestone; atomic rename is not an fsync or distributed transaction guarantee |
 | `invokeOnce(options)` | Resolve a simple AgentSpec and dispatch exactly one model request | No tool execution, retries, session, or continuation scheduler |
+| `loadToolDefinition(resources, path)` | Load and validate a resource-backed tool definition | Metadata only; `entry.js` is never executed |
+| `loadToolResource(resources, path, options)` | Bind an optional explicitly supplied trusted adapter | Resource content cannot grant itself executable behavior |
+| `buildContinuation(options)` | Build the next canonical request from one response and a complete tool batch | Pure builder; no model call or tool execution |
 
 The legacy CLI remains available. It now passes immutable run context through tools and nested
 tasks instead of mutating `vfs.agent*` fields. Its existing model loop and Worker lifecycle are
@@ -87,3 +90,17 @@ Next milestones should add bounded model/stream lifecycle adapters, reference-aw
 tools and explicit continuation assembly before Git activation. Worktree switching, remote
 connectors, browser packaging, hostile-code isolation, durable recovery and UI hosting remain
 planned. Existing prototype tests do not establish those guarantees.
+
+## Continuations
+
+`buildContinuation` requires one result for every `tool_use` block in the parent response. It
+preserves provider blocks, IDs, result order, and error flags, then returns a deeply frozen request.
+The caller decides when to persist and dispatch that request as a new Invocation. It is not an
+automatic session loop.
+
+## Dynamic tool definitions
+
+`loadToolDefinition` reads `/tools/<name>/definition.json` and validates its JSON schema.
+`loadToolResource` can bind an adapter only when the host supplies it explicitly; an `entry.js`
+field is descriptive metadata and is never imported or evaluated by this milestone. This keeps
+dynamic tool metadata composable without accidentally turning resource content into ambient code.
