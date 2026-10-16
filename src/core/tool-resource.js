@@ -1,4 +1,4 @@
-// Resource-backed tool metadata. Entry sources are never read or executed.
+// Resource-backed tool metadata. Entry sources are read only through explicit binding.
 import { normalize } from "../kernel/paths.js";
 import { VfsError } from "../kernel/errors.js";
 import { resolveReference } from "./references.js";
@@ -135,6 +135,65 @@ export async function loadToolDefinition(resources, path, options = {}) {
   const base = toolPath(path);
   const snapshot = snapshotOptions(options);
   return loadDefinition(resources, base, snapshot);
+}
+
+async function bindLoadedDefinition(resources, definition, { loader, maxBytes, signal }) {
+  if (definition.entry === undefined) {
+    fail(`tool definition at ${definition.path} does not declare an entry`, "EINVAL", definition.path);
+  }
+  const entryPath = `${definition.path === "/" ? "" : definition.path}/${definition.entry}`;
+  const { value: source, provenance } = await resolveReference(resources, entryPath, { maxBytes, signal });
+  const implementation = await loader({
+    source,
+    path: definition.path,
+    entryPath,
+    definition,
+    revision: provenance.contentHash,
+  });
+  if (typeof implementation !== "function") {
+    fail("tool resource loader must return a function", "EINVAL", entryPath);
+  }
+
+  // The implementation is deliberately called through the trusted adapter shape used by
+  // Environment and WorkflowGraph. Resource source never gets evaluated by this module;
+  // the explicit loader above owns that decision and any isolation policy.
+  return Object.freeze({
+    path: definition.path,
+    definition,
+    entryPath,
+    entryRevision: provenance.contentHash,
+    async invoke(options = {}) {
+      return implementation({
+        ...options,
+        path: definition.path,
+        entryPath,
+        definition,
+        resources,
+      });
+    },
+  });
+}
+
+/**
+ * Explicitly bind a resource-defined tool to a trusted host loader.
+ *
+ * `loadToolDefinition()` remains metadata-only. This function reads the declared entry source
+ * only after the caller supplies `loader`; the loader decides whether and how source is
+ * evaluated, including any sandbox or VM policy. The returned record is directly usable as an
+ * Environment `tools.adapters` entry and therefore by WorkflowGraph's existing adapter path.
+ *
+ * @param {{read(path: string, options?: object): Promise<string|Uint8Array|ArrayBuffer>}} resources
+ * @param {string} path absolute tool directory
+ * @param {{loader(options: {source: string, path: string, entryPath: string, definition: object, revision: string}): Promise<Function>|Function, revision?: string, maxBytes?: number, signal?: AbortSignal}} options
+ */
+export async function bindToolResource(resources, path, options = {}) {
+  if (typeof options.loader !== "function") {
+    fail("bindToolResource requires an explicit loader; resource code is never evaluated automatically");
+  }
+  const base = toolPath(path);
+  const snapshot = snapshotOptions(options);
+  const definition = await loadDefinition(resources, base, snapshot);
+  return bindLoadedDefinition(resources, definition, { ...snapshot, loader: options.loader });
 }
 
 /** Resolve explicit directories in order, rejecting duplicate names without discovery. */

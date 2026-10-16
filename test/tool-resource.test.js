@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { createView } from "../src/kernel/view.js";
 import * as toolResources from "../src/core/tool-resource.js";
 
-const { loadToolDefinition, toolCatalog } = toolResources;
+const { bindToolResource, loadToolDefinition, toolCatalog } = toolResources;
 
 function resources(definitions, { onRead } = {}) {
   const reads = [];
@@ -106,7 +106,7 @@ test("deep-freezes the descriptor and its schema", async () => {
 });
 
 test("exports metadata loaders only and never reads an entrypoint", async () => {
-  assert.deepEqual(Object.keys(toolResources).sort(), ["loadToolDefinition", "toolCatalog"]);
+  assert.deepEqual(Object.keys(toolResources).sort(), ["bindToolResource", "loadToolDefinition", "toolCatalog"]);
   const store = resources({
     "/tools/echo/definition.json": valid,
     "/tools/echo/entry.js": "throw new Error('must not run')",
@@ -115,6 +115,74 @@ test("exports metadata loaders only and never reads an entrypoint", async () => 
   assert.equal(Object.hasOwn(definition, "invoke"), false);
   assert.equal(definition.entry, "entry.js");
   assert.deepEqual(store.reads.map(({ path }) => path), ["/tools/echo/definition.json"]);
+});
+
+test("binds entry source only through an explicit loader and returns the trusted adapter shape", async () => {
+  const source = "export default async ({ input }) => `bound:${input.value}`;";
+  const store = resources({
+    "/tools/echo/definition.json": valid,
+    "/tools/echo/entry.js": source,
+  });
+  await assert.rejects(
+    () => bindToolResource(store, "/tools/echo"),
+    /requires an explicit loader/,
+  );
+  assert.deepEqual(store.reads, []);
+
+  let received;
+  const binding = await bindToolResource(store, "/tools/echo", {
+    loader({ source: entrySource, entryPath, definition, revision }) {
+      received = { entrySource, entryPath, name: definition.name, revision };
+      return async ({ input }) => `bound:${input.value}`;
+    },
+  });
+  assert.deepEqual(received, {
+    entrySource: source,
+    entryPath: "/tools/echo/entry.js",
+    name: "echo",
+    revision: hash(source),
+  });
+  assert.equal(binding.path, "/tools/echo");
+  assert.equal(binding.entryPath, "/tools/echo/entry.js");
+  assert.equal(binding.entryRevision, hash(source));
+  assert.equal(await binding.invoke({ input: { value: "ok" } }), "bound:ok");
+  assert.deepEqual(store.reads.map(({ path }) => path), [
+    "/tools/echo/definition.json",
+    "/tools/echo/entry.js",
+  ]);
+});
+
+test("binding never evaluates resource source or accepts a non-callable loader result", async () => {
+  const source = "throw new Error('resource code must not run');";
+  const store = resources({
+    "/tools/unsafe/definition.json": valid.replaceAll("echo", "unsafe"),
+    "/tools/unsafe/entry.js": source,
+  });
+  const binding = await bindToolResource(store, "/tools/unsafe", {
+    loader({ source: entrySource }) {
+      assert.equal(entrySource, source);
+      return async () => "host-selected behavior";
+    },
+  });
+  assert.equal(await binding.invoke({ input: {} }), "host-selected behavior");
+  await assert.rejects(
+    () => bindToolResource(store, "/tools/unsafe", { loader: () => ({}) }),
+    { code: "EINVAL" },
+  );
+});
+
+test("requires an entrypoint when explicitly binding a resource tool", async () => {
+  const store = resources({
+    "/tools/no-entry/definition.json": JSON.stringify({
+      name: "no-entry",
+      description: "Metadata only",
+      input_schema: { type: "object" },
+    }),
+  });
+  await assert.rejects(() => bindToolResource(store, "/tools/no-entry", {
+    loader: () => async () => "never",
+  }), { code: "EINVAL" });
+  assert.deepEqual(store.reads.map(({ path }) => path), ["/tools/no-entry/definition.json"]);
 });
 
 test("builds an explicit catalog and rejects duplicate names", async () => {

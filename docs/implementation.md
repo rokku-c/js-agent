@@ -16,7 +16,8 @@ independent: callers can use a resource View or reference resolver without runni
 | `createRunStore(storage)` | Record request, materialized plan, response, status and events | Volatile milestone; atomic rename is not an fsync or distributed transaction guarantee |
 | `createRunObserver(storage)` | Read redacted status/event metadata for concurrent UI or Agent observation | Polling, best-effort and explicitly volatile; payload files are not exposed |
 | `invokeOnce(options)` | Resolve a simple AgentSpec and dispatch exactly one model request | No tool execution, retries, session, or continuation scheduler |
-| `loadToolDefinition(resources, path)` | Load and validate a resource-backed tool definition | Metadata only; `entry.js` is never executed |
+| `loadToolDefinition(resources, path)` | Load and validate a resource-backed tool definition | Metadata only; `entry.js` is never read or executed |
+| `bindToolResource(resources, path, {loader})` | Read an entrypoint and bind it to a trusted adapter | Explicit loader owns evaluation and isolation; no implicit resource code execution |
 | `buildContinuation(options)` | Build the next canonical request tail from one response and a complete tool batch | Pure builder; no model call or tool execution |
 | `continueOnce(options)` | Dispatch one explicit continuation from a parent request | No tool execution or implicit session loop; parent linkage is recorded in the plan |
 
@@ -103,9 +104,12 @@ is not an automatic session loop and it accepts only already materialized tool r
 ## Dynamic tool definitions
 
 `loadToolDefinition` reads `/tools/<name>/definition.json` and validates its JSON schema.
-An `entry.js` field is descriptive metadata and is never imported or evaluated by this milestone.
-The host must bind executable behavior explicitly. This keeps dynamic tool metadata composable
-without accidentally turning resource content into ambient code.
+An `entry.js` field remains descriptive metadata for that API and is never read or evaluated.
+When a host intentionally wants executable resource behavior, `bindToolResource` requires an
+explicit `loader`. It reads the declared entry source, passes the source and its content revision
+to that loader, and requires a callable result. The returned `{path, invoke}` record is the same
+trusted adapter shape accepted by `createEnvironment` and `createWorkflowGraph`; the runtime never
+chooses an evaluator or silently executes resource content.
 
 ## Environment and Run observation
 

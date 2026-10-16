@@ -46,16 +46,17 @@ A dynamic tool is an ordinary resource-backed tool:
   entry.js
 ```
 
-The loader:
+`loadToolDefinition(resources, path)` reads and validates `definition.json` only. It does not
+read or execute `entry.js`, because metadata discovery must not turn resource bytes into ambient
+code. A host that intentionally enables executable resource behavior calls
+`bindToolResource(resources, path, { loader })`. That explicit loader receives the entry source,
+its path, the validated definition, and the entry content revision; it decides whether to evaluate
+the source, use a VM, or hand it to a supervised worker. The returned `{ path, invoke }` binding is
+a trusted adapter and can be supplied to `createEnvironment({ tools: { adapters } })`, then passed
+unchanged through `prepareWorkflow()` to `createWorkflowGraph()`.
 
-1. reads and validates `definition.json`;
-2. resolves its entrypoint;
-3. binds the tool to the current View;
-4. checks the declared capability requirements;
-5. returns a callable tool object.
-
-The loader records the tool path and revision in the Invocation plan. A tool changed during a
-run does not change the tool already bound to that run.
+The binding records the tool path and entry revision. A tool changed after binding does not change
+the callable already held by that run.
 
 ## Connector shape
 
