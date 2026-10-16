@@ -120,35 +120,39 @@ export function createEnvironment({
     };
   }
 
-  async function run({ agent, input, signal, id, continuationId, continuationInput, trace } = {}) {
+  /**
+   * Materialize the same trusted, View-scoped execution options used by run().
+   * A workflow coordinator can pass the result to startRoot() and continueBranch()
+   * without reconstructing this environment's catalog or adapter boundary.
+   */
+  async function prepareWorkflow(options = {}) {
+    object(options, "workflow options");
     const definitions = await catalog();
     const adapters = new Map();
     for (const definition of definitions) {
       const adapter = toolAdapterByPath.get(definition.path);
       if (!adapter) throw fail(`no trusted adapter supplied for tool path ${definition.path}`, "EACCES");
-      adapters.set(definition.name, async ({ input: toolInput, ...options }) => adapter({
-        ...options,
+      adapters.set(definition.name, async ({ input: toolInput, ...adapterOptions }) => adapter({
+        ...adapterOptions,
         input: toolInput,
         path: definition.path,
         definition,
         resources: toolsView,
       }));
     }
-    return runWorkflow({
+    return {
+      ...options,
       storage,
       resources: agentView,
-      agent,
-      input,
       model: modelForRun(),
       tools: definitions,
       store: runStore,
       toolAdapters: adapters,
-      signal,
-      id,
-      continuationId,
-      continuationInput,
-      trace,
-    });
+    };
+  }
+
+  async function run(options = {}) {
+    return runWorkflow(await prepareWorkflow(options));
   }
 
   const observe = Object.freeze({
@@ -178,6 +182,7 @@ export function createEnvironment({
 
   return Object.freeze({
     run,
+    prepareWorkflow,
     catalog,
     discoverTools,
     observe,

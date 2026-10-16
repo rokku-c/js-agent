@@ -1,46 +1,99 @@
-# Real Use Report: external-resource evaluator B
+# Real-use report: environment + workflow graph + run observer
 
 Date: 2026-10-16
-Checkout: `/Users/user/.codex/worktrees/19fa/js-agent`
 
 ## Verdict
 
-**Conditional pass for the implemented volatile resource contract.** View authorization, current-content pinning, selected-byte bounds, cancellation propagation, and external-effect uncertainty held under the hostile cases below. Two input-boundary defects were fixed. The implementation still has a documented transport limitation and a material partial-storage limitation described below, so it is not a durable RunState or streaming-quota guarantee.
+**Pass for the offline integrated application.** `examples/integrated-environment-graph.js` is a real end-user composition of `createEnvironment`, `createWorkflowGraph`, and `createRunObserver`. It submits one root Agent, executes the root tool batch, fans out two keyed continuations concurrently, reads live graph and run state while both branches are active, then closes and reports the final state.
 
-## Exercise and evidence
+Run it with:
 
-The adversarial suite is [test/adversarial.test.js](test/adversarial.test.js). It uses a simulated remote namespace with delayed reads, stale content, mutable returned buffers, credential-shaped entries, shell-like path strings, and failing status writes.
+```sh
+node examples/integrated-environment-graph.js
+```
 
-| Boundary | Hostile case | Evidence |
-| --- | --- | --- |
-| View authorization | Traversal into an ungranted secret, non-string path coercion, and a remote shell command string | All are rejected before the adapter is called. The facade exposes no `open` or `exec`. |
-| Credential opacity | `/dev/secrets` lists a token with size, mode, and target metadata | The View returns only `{name: "TOKEN"}`. The token value requires its explicit read grant; stat is denied. |
-| Delayed View read | Remote read waits on an AbortSignal | The same abort reason reaches the caller and the adapter sees the cancellation. |
-| Pinning | Remote returns newer bytes after a delayed read | A pinned old SHA-256 revision returns `ESTALE`; the current bytes are never accepted as the old revision. |
-| Byte bounds | Invalid `maxBytes`, mutable `ArrayBuffer`, and a 1 MiB source with a small selected line | Invalid bounds fail before `read`; bytes are copied before hashing; selected UTF-8 output stays within the cap. |
-| Reference cancellation | Abort occurs before a delayed read releases | The abort reason wins after the read settles; no late value is returned. |
-| RunState | Model-side effect happens before a disconnect | The run is recorded as `unknown`, so the effect is not presented as success. |
-| Admission cancellation | Agent/context read completes after cancellation | The run is `cancelled` and the model is never called. |
-| Partial persistence | Terminal status temp write fails | `store.lastError()` records `EIO`, but the persisted status remains the previous `started` state. This is an observed volatile-storage limitation. |
-| Root namespace | RunStore configured with `/` | Run paths are now canonical `/root-run/...`, without the invalid `//root-run/...` form. |
+The example has no network, credentials, or Git self-modification. Its model and tools are deterministic trusted host adapters over a VFS resource tree.
 
-The full suite passes: **153 tests, 153 passed**. Focused verification also passes with `node test/run.js adversarial` (**8/8**).
+## What the application does
 
-## Changes made
+The resource tree contains a reviewer model description, two tool definitions, and a review brief. `createEnvironment` owns the four scoped Views and the trusted adapter wrappers. The root Agent is prepared by the environment and submitted to `createWorkflowGraph`:
 
-- `View` now rejects non-string resource paths before normalization or dispatch, preventing type-coercion from becoming an authorization input.
-- Reference `maxBytes` is validated before awaiting a remote read.
-- RunStore joins `/` roots without producing double-slash resource paths.
-- The adversarial suite is included in `npm test` and the named suite runner.
+```js
+const workflow = await environment.prepareWorkflow({
+  agent,
+  input: "Review this brief and fan out the follow-up work.",
+});
+const started = await graph.startRoot({ graphId, ...workflow });
+```
 
-## Trust-boundary assessment
+The root model requests `summary` and `risks`. The graph executes those tool calls through the environment's scoped tool adapters. Two explicit continuation edges are then started with `Promise.all` through `continueBranch`. Each branch waits at the model adapter gate, which makes the live state observable before the branches finish.
 
-The View is an operation/path capability facade over trusted JavaScript. It successfully prevents the caller from reaching ungranted paths or extracting raw resource handles, but it does not sandbox a malicious driver: once an operation is granted, driver-defined effects remain trusted by design.
+The UI is a small terminal report. It renders graph node status, edge status, observer run status, event sequence numbers, and a normalized JSON report containing `live`, `final`, `root`, and branch concurrency fields.
 
-Pinned references authenticate the bytes returned by the current resource. They do not retrieve historical revisions. A remote resource can therefore return `ESTALE`, delay indefinitely, or ignore cancellation; the resolver can reject after it settles, but it cannot force a non-cooperative adapter to stop.
+## Evidence
 
-The byte limit is a post-read materialization cap. The current API passes `encoding` and `signal` to `read` and may buffer a large source before applying the selected-content bound. The adversarial test confirms the cap on the materialized selection, not a network or memory quota.
+The live snapshot was taken while both continuation model requests were blocked:
 
-Credentials remain opaque when they are behind an ungranted resource path, and listing redacts metadata. Credential names are still discoverable when a directory list grant is given. Connector-specific service-grant and error-redaction enforcement is outside this milestone; hostile connector errors should be treated as potentially sensitive before being persisted to RunState.
+```text
+INTEGRATED REVIEW UI
 
-RunStore is explicitly `volatile`. A failed terminal status write can leave observers reading an older snapshot even though the in-memory store records `lastError` and returns the requested terminal result. Durable commit/recovery and an atomic status/event protocol are still required before treating RunState as an authoritative cross-process record under storage failure.
+graph integrated-review: completed
+nodes:
+  root           completed_with_tool_calls
+  branch:summary completed
+  branch:risks   completed
+runs:
+  integrated-review-risks  completed events=2
+  integrated-review-root   completed_with_tool_calls events=2
+  integrated-review-summary completed events=2
+root observer: completed_with_tool_calls events=2
+```
+
+The normalized live graph and runs were:
+
+```json
+{
+  "graph": {
+    "status": "waiting",
+    "nodes": [
+      ["root", "completed_with_tool_calls"],
+      ["branch:summary", "running"],
+      ["branch:risks", "running"]
+    ],
+    "edges": [
+      ["root:summary", "running"],
+      ["root:risks", "running"]
+    ]
+  },
+  "runs": [
+    ["integrated-review-root", "completed_with_tool_calls"],
+    ["integrated-review-summary", "started"],
+    ["integrated-review-risks", "started"]
+  ]
+}
+```
+
+The final graph was `completed`, with the root in `completed_with_tool_calls` and both continuation nodes and edges in `completed`. The application measured a branch concurrency of `2`. The observer output contained only status, event metadata, file availability, and volatility/redaction markers; request, plan, response, and tool payloads stayed out of the observer view.
+
+Validation:
+
+- `node --test test/integrated-environment-graph.test.js` — 1 passed.
+- `npm test` — full suite passed.
+- The integration test verifies shared `RunStore` wiring, live `waiting`/`running` graph state, concurrent `started` run snapshots, final graph closure, redaction, and measured overlap.
+
+## API seams and minimal fix
+
+The natural boundary was almost present but had one composition gap. `createEnvironment.run()` internally built the catalog, the model adapter wrapper, the tool adapter map, the scoped agent View, and the shared RunStore. `createWorkflowGraph.startRoot()` needs those same graph-compatible values. An application that reconstructed them would duplicate the environment's adapter boundary and could accidentally give the graph a different catalog or View.
+
+The minimal fix is `environment.prepareWorkflow(options)`. It builds the exact options that `run()` already used, including the environment-scoped `resources`, `model`, `tools`, `toolAdapters`, and `store`. `run()` now delegates to it, so the direct environment path and graph path share one construction path. No new execution model or adapter sandbox was added.
+
+The remaining composition is explicit by design:
+
+- The app creates one `RunStore` and passes it to both `createEnvironment` and `createWorkflowGraph`.
+- The graph owns persisted workflow nodes and edges under `/workflows`.
+- `createRunObserver` wraps `environment.observe`, so its `/runs` reads retain the observer permission View and its redacted contract.
+- Live inspection uses `startRoot`, `continueBranch`, `graph.inspect`, and `observer.list` before `graph.close`; the convenience `graph.run()` intentionally waits for the join.
+
+## Limits
+
+This is an offline integration check. `RunStore` remains volatile: a failed terminal status write can leave an observer with an older persisted status, as covered by the existing adversarial tests. The trusted model and tool adapters are scoped by Views but are still host JavaScript. Graph recovery and cancellation remain the existing graph semantics and are not changed by this example.
