@@ -64,7 +64,8 @@ function randomToken(prefix) {
 
 function terminalForEvent(event, status) {
   if (event?.kind === "completed") {
-    return status === "completed_with_tool_calls" ? status : "completed";
+    // The journal may be newer than status.json after a failed terminal snapshot write.
+    return event.toolCalls?.length || status === "completed_with_tool_calls" ? "completed_with_tool_calls" : "completed";
   }
   return DURABLE_TERMINAL.has(event?.kind) ? event.kind : null;
 }
@@ -177,6 +178,20 @@ export function createRunStore(vfs, { root = "/runs", mode = "volatile", lockTim
       storage: mode,
       ...value,
     });
+  }
+
+  async function writeJournaledStatus(id, value) {
+    try {
+      await writeStatus(id, value);
+    } catch (cause) {
+      lastErrors.set(id, cause);
+      throw error(`terminal outcome was journaled but status could not be committed for ${id}`, cause.code ?? "EIO", {
+        outcome: "unknown",
+        intendedStatus: value.status,
+        eventCommitted: true,
+        cause,
+      });
+    }
   }
 
   async function readJournal(id) {
@@ -309,17 +324,7 @@ export function createRunStore(vfs, { root = "/runs", mode = "volatile", lockTim
     const details = cause ? { error: failureRecord(cause) } : {};
     if (mode === "durable") {
       await appendEvent(id, state, details);
-      try {
-        await writeStatus(id, { status: state, ...details });
-      } catch (statusError) {
-        lastErrors.set(id, statusError);
-        throw error(`terminal outcome was journaled but status could not be committed for ${id}`, statusError.code ?? "EIO", {
-          outcome: "unknown",
-          intendedStatus: state,
-          eventCommitted: true,
-          cause: statusError,
-        });
-      }
+      await writeJournaledStatus(id, { status: state, ...details });
       states.set(id, state);
       return { id, path: pathJoin(root, id), status: state };
     }
@@ -379,22 +384,20 @@ export function createRunStore(vfs, { root = "/runs", mode = "volatile", lockTim
         const last = journal.events.at(-1);
         let state = terminalForEvent(last, status?.status) ?? (last?.kind === "started" ? "started" : status?.status ?? "unknown");
         sequence.set(id, journal.sequence);
-        owned.add(id);
-        states.set(id, state);
 
         // A committed started record without a committed terminal record means that a model
         // request or external effect may have happened. Recovery never turns that into success.
         if (state === "started") {
           await appendEvent(id, "unknown", { recovery: "process_restart" });
-          await writeStatus(id, { status: "unknown", recovery: "process_restart" });
+          await writeJournaledStatus(id, { status: "unknown", recovery: "process_restart" });
           state = "unknown";
-          states.set(id, state);
-        } else if (state === "completed" && status?.status === "completed_with_tool_calls") {
-          state = "completed_with_tool_calls";
-          states.set(id, state);
-        } else if (state !== status?.status && state !== "unknown") {
+        } else if (state !== status?.status) {
           await writeStatus(id, { status: state, recovery: "journal_reconciliation" });
         }
+        // Failed recovery must remain retryable on this store. Publish ownership only after
+        // reconciliation succeeds; the next attempt rereads the committed journal.
+        owned.add(id);
+        states.set(id, state);
         return { id, path: pathJoin(root, id), status: state, recovered: true, partial: hadPartial };
       }, { takeover });
     },
@@ -430,7 +433,8 @@ export function createRunStore(vfs, { root = "/runs", mode = "volatile", lockTim
         await writeSnapshot(pathJoin(root, id, "response.json"), response);
         await appendEvent(id, "completed", toolCalls === undefined ? {} : { toolCalls });
         const status = toolCalls?.length ? "completed_with_tool_calls" : "completed";
-        await writeStatus(id, { status });
+        if (mode === "durable") await writeJournaledStatus(id, { status });
+        else await writeStatus(id, { status });
         states.set(id, status);
         return { id, path: pathJoin(root, id), status };
       }));

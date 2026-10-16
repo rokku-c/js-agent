@@ -93,6 +93,7 @@ test("durable status failure reports uncertainty and leaves no failed temp file"
 
     const restarted = createRunStore(vfs, { mode: "durable" });
     assert.equal((await restarted.recover("status-failure")).status, "unknown");
+    assert.equal((await restarted.readStatus("status-failure")).status, "unknown");
   } finally {
     await close(directory);
   }

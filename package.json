@@ -16,7 +16,7 @@
     "./runtime": "./src/runtime.js"
   },
   "scripts": {
-    "test": "node --test test/unit.test.js test/vfs.test.js test/shell.test.js test/ai.test.js test/core.test.js test/agent.test.js test/airgap.test.js test/view.test.js test/references.test.js test/run-context.test.js test/invocation.test.js test/runtime.test.js test/tool-resource.test.js test/continuation.test.js test/worker-cancel.test.js test/workflow.test.js test/adversarial.test.js test/connector.test.js test/workflow-harness.test.js test/environment.test.js test/workflow-graph.test.js test/integrated-environment-graph.test.js test/git-revision-connector.test.js test/getting-started.test.js test/public-api.test.js test/external-workflow-ui.test.js test/durable-run-store.test.js test/durable-restart-observer.test.js",
+    "test": "node --test test/unit.test.js test/vfs.test.js test/shell.test.js test/ai.test.js test/core.test.js test/agent.test.js test/airgap.test.js test/view.test.js test/references.test.js test/run-context.test.js test/invocation.test.js test/runtime.test.js test/tool-resource.test.js test/continuation.test.js test/worker-cancel.test.js test/workflow.test.js test/adversarial.test.js test/connector.test.js test/workflow-harness.test.js test/environment.test.js test/workflow-graph.test.js test/integrated-environment-graph.test.js test/git-revision-connector.test.js test/getting-started.test.js test/public-api.test.js test/external-workflow-ui.test.js test/durable-run-store.test.js test/durable-restart-observer.test.js test/durable-crash-recovery.test.js",
     "test:all": "node test/run.js",
     "test:e2e": "node test/run.js e2e",
     "start": "node bin/js-agent"
