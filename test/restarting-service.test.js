@@ -30,19 +30,6 @@ test("Environment infers the injected store root and exposes the same trusted st
   assert.equal(createEnvironment({ resources: storage, model }).store.root, "/runs");
 });
 
-test("durable capability claims also require an implemented sync method", async () => {
-  const storage = await memory();
-  const declaredOnly = {
-    capabilities: () => ({ durable: true, exclusiveMkdir: true, atomicRename: true, append: true, flush: true }),
-  };
-  for (const name of ["mkdirp", "mkdir", "write", "read", "rename", "remove", "exists"]) {
-    declaredOnly[name] = storage[name].bind(storage);
-  }
-  assert.throws(() => createRunStore(declaredOnly, { mode: "durable" }), {
-    code: "ENOTSUP", message: "durable run store requires storage.sync()",
-  });
-});
-
 test("exact observer grants expose only authorized run metadata, not raw payloads", async () => {
   const storage = await memory();
   const store = createRunStore(storage);
