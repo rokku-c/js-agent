@@ -20,6 +20,7 @@ test("package exports expose the documented public entrypoints", () => {
     "createRunStore",
     "createView",
     "invokeOnce",
+    "consumeModelStream",
   ]) {
     assert.equal(typeof runtime[name], "function", `runtime export ${name}`);
   }

@@ -128,9 +128,9 @@ export default {
         return { events: [], state };
 
       case "error":
-        // a stream-level error is a *value* the caller has to read, not a transport
-        // failure — the connection was fine and the model's side said no
-        return { events: [{ type: "raw", text: JSON.stringify(p.error ?? p) }], state };
+        // The transport succeeded but the provider rejected the stream. The shared
+        // lifecycle rejects this event while retaining any earlier partial output.
+        return at("error", { message: p.error?.message ?? JSON.stringify(p.error ?? p) });
 
       default:
         return { events: [{ type: "raw", text: frame }], state };

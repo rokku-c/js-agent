@@ -1,9 +1,12 @@
+import { applyEvent, consumeModelEvents } from "../../core/model-stream.js";
+export { seed, applyEvent, assemble } from "../../core/model-stream.js";
+
 // sse.js — the streaming state machine, provider-independent.
 //
 // ── the split, and why it is where it is ──
 // a dialect turns a raw SSE *frame* into zero or more **normalized events**; this file turns
-// normalized events into the running message. so the accumulator and the assembling live
-// here once, and a dialect only has to describe its own wire format.
+// normalized events into the running message via core/model-stream.js. Dialects only
+// describe their own wire format; trusted connectors can also supply canonical events.
 //
 //   {type: "message_start",  id, model, usage}
 //   {type: "block_start",    index, kind: text|thinking|tool_use, id, name}
@@ -72,134 +75,12 @@ export function parseFrame(frame) {
   return { event, id, data: data.join("\n"), hasData: data.length > 0, raw: frame };
 }
 
-export function seed() {
-  return {
-    blocks: [],
-    idx: -1,
-    stop_reason: null,
-    usage: {},
-    id: null,
-    model: null,
-    /** events this runtime does not model, kept so an error can be *reported* rather than
-     *  silently swallowed — a stream that ends with nothing usually has its reason here */
-    other: [],
-    /** per-dialect scratch that must survive between frames. it lives in the accumulator
-     *  because openai needs it (its tool-call fragments carry an array index and nothing
-     *  else) and anthropic ignores it entirely. */
-    dialect: {},
-  };
-}
-
-const replaceBlock = (blocks, i, f) => blocks.map((b, n) => (n === i ? f(b) : b));
-
-/** apply one normalized event. pure: it returns a new accumulator, which is what lets the
- *  whole thing be replayed from canned bytes in a test with no stream at all. */
-export function applyEvent(a, ev) {
-  const t = ev.type ?? "";
-  const bi = a.idx ?? 0;
-
-  switch (t) {
-    case "message_start":
-      return {
-        ...a,
-        blocks: [],
-        idx: -1,
-        stop_reason: ev.stop_reason ?? null,
-        usage: ev.usage ?? {},
-        id: ev.id ?? null,
-        model: ev.model ?? null,
-        other: a.other,
-        dialect: a.dialect ?? {},
-      };
-
-    case "block_start": {
-      const kind = ev.kind ?? "text";
-      const block =
-        kind === "tool_use"
-          ? { type: "tool_use", id: ev.id ?? "", name: ev.name ?? "", input: "" }
-          : kind === "thinking"
-            ? { type: "thinking", thinking: "", signature: "" }
-            : { type: "text", text: "" };
-      return { ...a, blocks: [...a.blocks, block], idx: ev.index ?? a.blocks.length };
-    }
-
-    case "text_delta":
-      return { ...a, blocks: replaceBlock(a.blocks, bi, (b) => ({ ...b, text: (b.text ?? "") + (ev.text ?? "") })) };
-
-    case "thinking_delta":
-      return {
-        ...a,
-        blocks: replaceBlock(a.blocks, bi, (b) => ({ ...b, thinking: (b.thinking ?? "") + (ev.text ?? "") })),
-      };
-
-    case "signature_delta":
-      return {
-        ...a,
-        blocks: replaceBlock(a.blocks, bi, (b) => ({ ...b, signature: (b.signature ?? "") + (ev.sig ?? "") })),
-      };
-
-    case "tool_input_delta":
-      return { ...a, blocks: replaceBlock(a.blocks, bi, (b) => ({ ...b, input: (b.input ?? "") + (ev.json ?? "") })) };
-
-    case "block_stop": {
-      const b = a.blocks[bi];
-      if (b?.type !== "tool_use") return a;
-      // the input is a JSON *string* assembled piece by piece; it only becomes an object
-      // here. a malformed tail must not take the whole run down — a model that emitted
-      // truncated JSON is a thing the loop has to survive and report.
-      const raw = String(b.input ?? "").trim();
-      let parsed = {};
-      try {
-        parsed = raw === "" ? {} : JSON.parse(raw);
-      } catch {
-        parsed = { __unparsed: raw };
-      }
-      return { ...a, blocks: replaceBlock(a.blocks, bi, (x) => ({ ...x, input: parsed })) };
-    }
-
-    case "message_delta":
-      // the usage is **merged, not replaced**, and that is load-bearing: the real wire sends
-      // `message_start` with the input token count and then `message_delta` carrying only
-      // `output_tokens`. replacing would drop the input count on every streamed round, and
-      // the input count is what drives proactive folding — so the symptom would be a
-      // mysterious overflow on a long run rather than a missing number.
-      return {
-        ...a,
-        stop_reason: ev.stop_reason ?? a.stop_reason,
-        usage: { ...a.usage, ...(ev.usage ?? {}) },
-      };
-
-    case "message_stop":
-      return a;
-
-    default: {
-      // an event we do not model is kept, because a stream that ends with no content and
-      // no error usually has its explanation sitting in one of these
-      const text = ev.type === "raw" ? ev.text : JSON.stringify(ev);
-      return { ...a, other: [...a.other, text] };
-    }
-  }
-}
-
 /** fold one raw frame into the accumulator. */
 export function stepFrame(frame, a, dialect) {
   const { events, state } = dialect.events(frame, a.dialect ?? {});
   let acc = { ...a, dialect: state ?? a.dialect ?? {} };
   for (const ev of events ?? []) acc = applyEvent(acc, ev);
   return acc;
-}
-
-/** the accumulator → an Anthropic-shaped message body, so a streamed call and a
- *  non-streamed one hand the caller the same shape and nothing downstream can tell. */
-export function assemble(a) {
-  return {
-    id: a.id,
-    model: a.model,
-    role: "assistant",
-    content: a.blocks,
-    stop_reason: a.stop_reason,
-    usage: a.usage,
-  };
 }
 
 /**
@@ -209,26 +90,23 @@ export function assemble(a) {
  * nu-agent threads its markdown renderer through the same place rather than collecting
  * first and printing after, because printing after is not streaming.
  */
-export async function consume(chunks, dialect, { onEvent } = {}) {
+export async function consume(chunks, dialect, options = {}) {
   const reader = makeFrameReader();
-  let acc = seed();
-
-  const feed = (frame) => {
-    const { events, state } = dialect.events(frame, acc.dialect ?? {});
-    acc = { ...acc, dialect: state ?? acc.dialect ?? {} };
-    for (const ev of events ?? []) {
-      // the event is surfaced *before* it is applied, so a renderer sees the same delta
-      // the accumulator does rather than a diff of the result
-      if (onEvent) onEvent(ev);
-      acc = applyEvent(acc, ev);
-    }
-  };
-
-  for await (const item of chunks) {
-    if (item?.chunk == null) continue;
-    for (const frame of reader.push(item.chunk)) feed(frame);
+  let state = dialect.state?.() ?? {};
+  function* feed(frame) {
+    const result = dialect.events(frame, state);
+    state = result.state ?? state;
+    yield* result.events ?? [];
   }
-  for (const frame of reader.flush()) feed(frame);
-
-  return acc;
+  const events = (async function* () {
+    for await (const item of chunks) {
+      if (item?.chunk == null) continue;
+      for (const frame of reader.push(item.chunk)) yield* feed(frame);
+    }
+    for (const frame of reader.flush()) yield* feed(frame);
+  })();
+  // Low-level decoding also supports inspecting plain error bodies. Model requests
+  // explicitly require a completion event.
+  const acc = await consumeModelEvents(events, { requireComplete: false, ...options });
+  return { ...acc, dialect: state };
 }

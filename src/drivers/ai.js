@@ -228,6 +228,7 @@ export default defineDriver({
     };
 
     const exchange = async (dialect, vendor, model, canonical, { signal, onEvent, stream }) => {
+      signal?.throwIfAborted();
       const token = dialect.local ? null : await readToken();
       if (!dialect.local && !token) {
         throw new VfsError("EACCES", "no credential is configured for this provider", {
@@ -254,7 +255,7 @@ export default defineDriver({
             for await (const frame of frames) yield { chunk: frame };
           })(),
           anthropic,
-          { onEvent }
+          { onEvent, signal, requireComplete: true }
         );
         return sse.assemble(acc);
       }
@@ -287,23 +288,19 @@ export default defineDriver({
         const chunks = handle.stream({ method: "POST", url, headers, body: JSON.stringify(body) }, { signal });
         // the first item is the head, because the caller has to know a non-200 arrived
         // before deciding what the body means
-        let head = null;
         const framed = (async function* () {
           for await (const item of chunks) {
             if (item.head) {
-              head = item.head;
+              const error = classify(item.head.status, "stream request rejected", url);
+              if (error) throw error;
               continue;
             }
             yield item;
           }
         })();
 
-        const acc = await sse.consume(framed, dialect, { onEvent });
+        const acc = await sse.consume(framed, dialect, { onEvent, signal, requireComplete: true });
 
-        if (head && (head.status < 200 || head.status >= 300)) {
-          const raw = (acc.other ?? []).join(" ").trim();
-          throw classify(head.status, raw, url) ?? new VfsError("EIO", `status ${head.status}`);
-        }
         if ((acc.blocks ?? []).length === 0 && acc.stop_reason == null) {
           const hint = (acc.other ?? []).join(" ").trim();
           throw new VfsError("EIO", "the stream ended without a single event", {
@@ -376,8 +373,10 @@ export default defineDriver({
     const openHandle = (node) => {
       const messages = [];
       let inFlight = false;
+      const lifetime = new AbortController();
 
       const guard = () => {
+        if (lifetime.signal.aborted) throw new VfsError("EBADF", "model handle closed");
         if (inFlight) {
           throw new VfsError("EBUSY", "this conversation handle already has a request in flight", {
             path: node.model,
@@ -434,7 +433,8 @@ export default defineDriver({
           const done = guard();
           try {
             const req = build(canonical);
-            const res = await exchange(node.dialect, node.vendor, node.model, req, { ...opts, stream: true });
+            const signal = opts.signal ? AbortSignal.any([opts.signal, lifetime.signal]) : lifetime.signal;
+            const res = await exchange(node.dialect, node.vendor, node.model, req, { ...opts, signal, stream: true });
             messages.push(...(canonical.messages ?? []));
             messages.push({ role: "assistant", content: res.content ?? [] });
             return res;
@@ -446,6 +446,7 @@ export default defineDriver({
          *  a test that has to prove the transcript was not sent twice */
         asked: () => responderFor(node.dialect).seen(),
         async close() {
+          lifetime.abort(new Error("model handle closed"));
           messages.length = 0;
         },
         /** so a caller can say `await using handle = await vfs.open(…)` and have the

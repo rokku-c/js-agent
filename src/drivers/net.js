@@ -131,13 +131,17 @@ export default defineDriver({
           if (!res.body) return;
           const reader = res.body.getReader();
           const decoder = new TextDecoder();
+          let complete = false;
           try {
             for (;;) {
               const { done, value } = await reader.read();
-              if (done) break;
+              if (done) { complete = true; break; }
               yield decoder.decode(value, { stream: true });
             }
+            const tail = decoder.decode();
+            if (tail) yield tail;
           } finally {
+            if (!complete) await reader.cancel().catch(() => {});
             reader.releaseLock?.();
           }
         },
@@ -270,37 +274,38 @@ export default defineDriver({
 
     /** the streaming path yields chunks; framing is the caller's business, because only
      *  the caller knows what it is reading (SSE, NDJSON, a plain body). */
-    const runStream = (req, { signal } = {}) => {
+    const runStream = async function* (req, { signal } = {}) {
       const { url, method } = check(req);
       const full = { ...req, url: url.toString(), method };
       const timeout = timeoutSignal(req.timeoutMs ?? timeoutMs);
       const combined = combineSignals(signal, timeout);
-      const inner = (async function* () {
-        let res;
-        try {
-          res = await active.run(full, { signal: combined.signal });
-        } catch (e) {
-          combined.done();
-          if (e instanceof VfsError) throw e;
-          throw new VfsError("EIO", `the request failed: ${e.message}`, {
-            operation: "net",
-            hint: `${method} ${url.origin}${url.pathname} via transport=${transportName}`,
-            cause: e,
-          });
-        }
-        // the caller has to know a non-200 arrived *before* deciding what the body means,
-        // so the status is delivered as the first item rather than swallowed here
+      let res;
+      try {
+        combined.signal.throwIfAborted();
+        res = await active.run(full, { signal: combined.signal });
         const head = res.__raw
           ? { status: res.status, headers: res.headers }
           : { status: res.status, headers: Object.fromEntries(res.headers ?? []) };
         yield { head };
-        try {
-          for await (const chunk of active.chunks(res)) yield { chunk };
-        } finally {
-          combined.done();
+        let bytes = 0;
+        for await (const chunk of active.chunks(res)) {
+          combined.signal.throwIfAborted();
+          bytes += Buffer.byteLength(chunk);
+          if (bytes > maxBytes) throw new VfsError("EOVERFLOW", `the stream exceeds the ${maxBytes} byte limit`, { operation: "net" });
+          yield { chunk };
         }
-      })();
-      return inner;
+      } catch (cause) {
+        if (cause instanceof VfsError) throw cause;
+        throw new VfsError("EIO", `the request failed: ${cause.message}`, {
+          operation: "net", cause,
+          hint: `${method} ${url.origin}${url.pathname} via transport=${transportName}`,
+        });
+      } finally {
+        // Covers return() immediately after the head, before chunks() owns a reader.
+        if (res?.body && !res.body.locked) await res.body.cancel().catch(() => {});
+        timeout.controller.abort();
+        combined.done();
+      }
     };
 
     return {
@@ -384,11 +389,14 @@ export default defineDriver({
         if (!flags.includes("+") && !flags.includes("w")) {
           throw new VfsError("EACCES", "the request device opens for r+ or w only", { path: "/request" });
         }
+        const lifetime = new AbortController();
+        const options = (opts = {}) => ({ ...opts, signal: opts.signal
+          ? AbortSignal.any([opts.signal, lifetime.signal]) : lifetime.signal });
         return {
           node: "/dev/net/request",
-          request: (req, opts) => run(req, opts),
-          stream: (req, opts) => runStream(req, opts),
-          async close() {},
+          request: (req, opts) => run(req, options(opts)),
+          stream: (req, opts) => runStream(req, options(opts)),
+          async close() { lifetime.abort(new Error("network handle closed")); },
         };
       },
     };
@@ -413,5 +421,6 @@ function combineSignals(a, b) {
   a.addEventListener?.("abort", onAbort, { once: true });
   b.signal.addEventListener?.("abort", onAbort, { once: true });
   if (a.aborted) c.abort(a.reason);
-  return { signal: c.signal, done: () => { b.done(); a.removeEventListener?.("abort", onAbort); } };
+  if (b.signal.aborted) c.abort(b.signal.reason);
+  return { signal: c.signal, done: () => { b.done(); a.removeEventListener?.("abort", onAbort); b.signal.removeEventListener?.("abort", onAbort); } };
 }

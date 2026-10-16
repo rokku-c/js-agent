@@ -15,3 +15,4 @@ export { createGitRevisionConnector } from "./connectors/git-revision.js";
 export { executeToolCalls, inspectInvocation, runWorkflow } from './core/workflow-harness.js';
 export { createEnvironment } from './core/environment.js';
 export { createWorkflowGraph, inspectWorkflowGraph } from "./core/workflow-graph.js";
+export { consumeModelStream } from "./core/model-stream.js";

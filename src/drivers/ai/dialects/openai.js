@@ -160,6 +160,8 @@ export default {
       return { events: [{ type: "raw", text: frame }], state: s };
     }
 
+    if (p.error) return { events: [{ type: "error", message: p.error.message ?? JSON.stringify(p.error) }], state: s };
+
     const out = [];
 
     if (!s.started) {
