@@ -111,6 +111,11 @@ export class Vfs {
     return this.#mounts.filter((m) => m.driver === driverName).map((m) => m.at);
   }
 
+  /** Capabilities declared by the resource mounted at a path. The path need not exist. */
+  capabilities(path) {
+    return { ...(this.resolve(path).mount.instance.capabilities ?? {}) };
+  }
+
   onMount(fn) {
     this.#watchers.push(fn);
     return () => {
@@ -379,7 +384,28 @@ export class Vfs {
     for (const seg of parts) {
       cur += "/" + seg;
       if (await this.exists(cur)) continue;
-      await this.mkdir(cur);
+      try {
+        await this.mkdir(cur);
+      } catch (error) {
+        // Another writer may have created this ancestor between exists() and mkdir().
+        // mkdirp is idempotent; the leaf reservation still uses exclusive mkdir.
+        if (error?.code !== "EEXIST" || !(await this.exists(cur))) throw error;
+      }
+    }
+  }
+
+  async sync(path) {
+    const res = this.resolve(path);
+    if (typeof res.mount.instance.sync !== "function") {
+      throw new VfsError("ENOTSUP", "this filesystem cannot flush changes", {
+        path: res.abs,
+        operation: "sync",
+      });
+    }
+    try {
+      return await res.mount.instance.sync(res.rel, this.#ctx(res));
+    } catch (e) {
+      throw rethrow(e, res.abs, "sync");
     }
   }
 

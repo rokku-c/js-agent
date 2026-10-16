@@ -129,6 +129,14 @@ export default defineDriver({
           });
 
     return {
+      capabilities: {
+        durable: true,
+        exclusiveMkdir: true,
+        atomicRename: true,
+        append: true,
+        flush: true,
+      },
+
       async stat(rel) {
         const p = await guard(rel);
         const s = await fs.stat(p);
@@ -177,6 +185,16 @@ export default defineDriver({
         if (rel === "") return;
         const p = await guard(rel, { forCreate: true }).catch(async () => host(rel));
         await fs.mkdir(p, { recursive: !!opts.recursive, mode: opts.mode });
+      },
+
+      async sync(rel) {
+        const p = await guard(rel);
+        const handle = await fs.open(p, "r");
+        try {
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
       },
 
       async remove(rel, _ctx, opts = {}) {

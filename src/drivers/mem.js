@@ -66,6 +66,14 @@ export default defineDriver({
         : fileStat({ mtime: node.mtime, mode: node.mode, size: node.data.byteLength });
 
     return {
+      capabilities: {
+        durable: false,
+        exclusiveMkdir: true,
+        atomicRename: true,
+        append: true,
+        flush: false,
+      },
+
       async stat(rel) {
         return statOf(needNode(rel));
       },
@@ -119,11 +127,18 @@ export default defineDriver({
         const parent = needDir(parentRel(rel));
         const name = basename(rel);
         if (parent.children.has(name)) {
+          // An exclusive mkdir is the reservation primitive used by durable stores.
+          if (opts.exclusive) throw new VfsError("EEXIST", "file exists", { path: at(rel) });
           // mkdir -p is the common case and mkdir -p is not an error on an existing dir
           if (parent.children.get(name).type === "dir") return;
           throw new VfsError("EEXIST", "file exists", { path: at(rel) });
         }
         parent.children.set(name, mkdirNode(opts.mode));
+      },
+
+      async sync() {
+        // Memory has no crash boundary. This method exists only so tests can exercise the
+        // durable protocol with an explicitly non-physical adapter.
       },
 
       async remove(rel, _ctx, opts = {}) {

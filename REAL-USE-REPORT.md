@@ -77,3 +77,23 @@ The runtime remains intentionally explicit: model and tool adapters are trusted 
 Run Store persistence is volatile, and the Git connector requires a real Git worktree. Those
 limits are already stated in the implementation and connector documentation and do not block the
 offline getting-started path.
+
+## Durable RunStore adversarial pass
+
+Date: 2026-10-16
+
+The smallest honest durable contract is now explicit. `mode: "durable"` requires a storage
+mount that declares exclusive directory creation, atomic rename, append, and flush. Hostfs
+implements those primitives; memory remains volatile and is rejected. Run directories reserve
+IDs with exclusive `mkdir`, writers serialize through a directory lock, snapshots use temporary
+files plus atomic rename, and the journal is authoritative during restart recovery.
+
+The focused tests cover duplicate IDs across store instances, restart during a started request,
+malformed JSONL tails, failed terminal status writes, and temporary-file cleanup. Recovery
+quarantines malformed tails and records an interrupted started run as `unknown`. A status failure
+after the terminal event is journaled raises an outcome with `outcome: "unknown"`; a fresh store
+can reconcile that journal. No protocol claim is made about an external effect: after dispatch,
+process loss or provider disconnect leaves the effect `unknown`, and the store does not retry it
+or infer success.
+
+Validation: `npm test` passed with the focused durable tests included.
