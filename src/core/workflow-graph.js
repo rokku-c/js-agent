@@ -158,7 +158,7 @@ async function inspectRaw(storage, graphId, { root = "/workflows" } = {}) {
       declaredStatus,
       persistedStatus,
       stale: declaredStatus !== persistedStatus,
-      uncertain: node.status === "running" && ["reserved", "started"].includes(persistedStatus),
+      uncertain: node.status === "running" && !INVOCATION_TERMINAL.has(persistedStatus),
     };
   }));
   return {
@@ -282,6 +282,35 @@ export function createWorkflowGraph({ storage, store, root = "/workflows" } = {}
       const controller = controllers.get(graphId) ?? new AbortController();
       controllers.set(graphId, controller);
       const invocationId = options.rootId ?? `${graphId}-root`;
+      const invocationPath = pathJoin(store.root ?? "/runs", invocationId);
+      const claim = await mutate(graphId, (current) => {
+        if (current.root) return { existing: true, state: current };
+        current.root = "root";
+        current.nodes.push({
+          key: "root",
+          kind: "root",
+          invocationId,
+          invocationPath,
+          status: "running",
+          invocationStatus: "running",
+        });
+        return { claimed: true, state: current };
+      });
+      if (claim.existing) {
+        const rootNode = claim.state.nodes.find((node) => node.key === claim.state.root);
+        return {
+          graphId,
+          deduplicated: true,
+          root: rootNode ? {
+            id: rootNode.invocationId,
+            path: rootNode.invocationPath,
+            status: rootNode.invocationStatus,
+          } : null,
+          status: claim.state.status,
+          graph: claim.state,
+        };
+      }
+
       const invocationOptions = { ...options, id: invocationId, signal: linkedSignal(controller.signal, options.signal) };
       delete invocationOptions.graphId;
       delete invocationOptions.rootId;
@@ -301,12 +330,13 @@ export function createWorkflowGraph({ storage, store, root = "/workflows" } = {}
         const cancelled = abortError(invocationOptions.signal) ?? (isAbort(error) ? error : null);
         if (!cancelled) {
           await mutate(graphId, (current) => {
-            current.status = "unknown";
-            current.nodes.push({
-              key: "root", kind: "root", invocationId, invocationPath: pathJoin(store.root ?? "/runs", invocationId),
-              status: "unknown", invocationStatus: "unknown", error: failure(error),
+            const node = current.nodes.find((item) => item.key === "root");
+            if (node) Object.assign(node, {
+              status: "unknown",
+              invocationStatus: "unknown",
+              error: failure(error),
             });
-            current.root = "root";
+            current.status = "unknown";
             return current;
           });
           throw error;
@@ -329,18 +359,16 @@ export function createWorkflowGraph({ storage, store, root = "/workflows" } = {}
         };
       }
       const node = {
-        key: "root",
-        kind: "root",
-        invocationId: rootResult.id,
-        invocationPath: rootResult.path ?? pathJoin(store.root ?? "/runs", rootResult.id),
         status: rootResult.status,
         invocationStatus: rootResult.status,
-        toolCallIds: rootResult.toolCalls?.map((call) => call.id) ?? [],
+        ...(rootResult.toolCalls?.length ? { toolCallIds: rootResult.toolCalls.map((call) => call.id) } : {}),
       };
       await mutate(graphId, (current) => {
-        if (current.root) return current;
-        current.root = "root";
-        current.nodes.push(node);
+        const currentNode = current.nodes.find((item) => item.key === "root");
+        // A restarted graph may have already classified this dispatch as unknown. A
+        // late completion must not make that recovered claim look successful.
+        if (!currentNode || currentNode.recovery === "process_restart") return current;
+        Object.assign(currentNode, node);
         current.status = current.cancelRequested || rootResult.status === "cancelled"
           ? "cancelled"
           : rootResult.status === "unknown" ? "unknown"
@@ -501,7 +529,7 @@ export function createWorkflowGraph({ storage, store, root = "/workflows" } = {}
       for (const item of inspected.reconciliation) {
         const node = state.nodes.find((candidate) => candidate.key === item.key);
         if (!node || node.status !== "running") continue;
-        if (["reserved", "started"].includes(item.persistedStatus)) {
+        if (!INVOCATION_TERMINAL.has(item.persistedStatus)) {
           node.status = "unknown";
           node.invocationStatus = "unknown";
           node.recovery = "process_restart";

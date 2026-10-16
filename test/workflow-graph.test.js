@@ -194,3 +194,78 @@ test("a restarted inspector detects and recovers a stale child without late over
   assert.equal(after.status, "unknown");
   assert.equal(after.nodes.find((node) => node.kind === "continuation").status, "unknown");
 });
+
+test("a root claim is recoverable after restart and late completion cannot restore success", async () => {
+  const { storage, store } = await setup();
+  let release;
+  let markStarted;
+  const modelStarted = new Promise((resolve) => { markStarted = resolve; });
+  const gate = new Promise((resolve) => { release = resolve; });
+  const model = {
+    path: "/models/fake",
+    async request() {
+      markStarted();
+      await gate;
+      return { content: [{ type: "text", text: "done" }] };
+    },
+  };
+  const graph = createWorkflowGraph({ storage, store });
+  const running = graph.startRoot({
+    graphId: "root-restart",
+    agent: { model: "/models/fake", tools: [] },
+    input: "investigate",
+    model,
+    tools: [],
+    toolAdapters: {},
+  });
+  await modelStarted;
+
+  const restarted = createWorkflowGraph({ storage, store: createRunStore(storage) });
+  const before = await restarted.inspect("root-restart");
+  assert.equal(before.uncertainNodes[0].invocationId, "root-restart-root");
+  assert.equal(before.uncertainNodes[0].persistedStatus, "started");
+
+  const recovered = await restarted.recover("root-restart");
+  assert.equal(recovered.status, "unknown");
+  assert.equal(recovered.nodes[0].recovery, "process_restart");
+
+  release();
+  const late = await running;
+  assert.equal(late.root.status, "completed");
+  const after = await restarted.inspect("root-restart");
+  assert.equal(after.status, "unknown");
+  assert.equal(after.nodes[0].status, "unknown");
+  assert.equal(after.nodes[0].invocationStatus, "unknown");
+});
+
+test("graph recovery marks a claimed invocation with no readable snapshot unknown", async () => {
+  const { storage, store } = await setup();
+  await storage.mkdirp("/workflows");
+  await storage.mkdir("/workflows/missing-snapshot");
+  await storage.write("/workflows/missing-snapshot/graph.json", JSON.stringify({
+    version: 1,
+    id: "missing-snapshot",
+    path: "/workflows/missing-snapshot",
+    status: "running",
+    cancelRequested: false,
+    created: "2026-01-01T00:00:00.000Z",
+    updated: "2026-01-01T00:00:00.000Z",
+    root: "root",
+    nodes: [{
+      key: "root",
+      kind: "root",
+      invocationId: "never-persisted",
+      invocationPath: "/runs/never-persisted",
+      status: "running",
+      invocationStatus: "running",
+    }],
+    edges: [],
+  }), { create: true });
+
+  const graph = createWorkflowGraph({ storage, store });
+  const inspected = await graph.inspect("missing-snapshot");
+  assert.equal(inspected.uncertainNodes[0].persistedStatus, "missing");
+  const recovered = await graph.recover("missing-snapshot");
+  assert.equal(recovered.status, "unknown");
+  assert.equal(recovered.nodes[0].recovery, "process_restart");
+});
