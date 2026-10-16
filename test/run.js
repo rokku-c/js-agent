@@ -16,7 +16,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 /** cheap and hermetic first, so a failure in the parser is not buried under a 700ms
  *  worker-deadline test that also failed for its own reasons. */
-const SUITES = ["unit", "vfs", "shell", "ai", "core", "agent", "airgap", "view", "references", "run-context", "invocation", "runtime", "tool-resource", "continuation", "worker-cancel", "workflow", "adversarial", "e2e"];
+const SUITES = ["unit", "vfs", "shell", "ai", "core", "agent", "airgap", "view", "references", "run-context", "invocation", "runtime", "tool-resource", "continuation", "worker-cancel", "workflow", "workflow-harness", "adversarial", "e2e"];
 
 const asked = process.argv.slice(2);
 const unknown = asked.filter((a) => !SUITES.includes(a));
