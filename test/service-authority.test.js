@@ -120,3 +120,49 @@ test("trusted service sanitizes transport errors before they reach the adapter",
     return true;
   });
 });
+
+test("Environment keeps bound capabilities out of caller-owned adapter records", async () => {
+  const resources = new Vfs();
+  await resources.mount("mem", "/");
+  await resources.mkdirp("/tools/frozen");
+  await resources.write("/tools/frozen/definition.json", JSON.stringify({
+    name: "frozen", description: "Frozen adapter", input_schema: { type: "object" },
+  }), { create: true });
+
+  const adapter = Object.freeze({
+    path: "/tools/frozen",
+    invoke: ({ resources: view }) => view.describe(),
+  });
+  const env = createEnvironment({
+    resources,
+    model: { path: "/models/default", adapter: async () => ({ content: [] }) },
+    tools: { paths: ["/tools/frozen"], adapters: [adapter] },
+    permissions: { tools: [{ path: "/tools/**", operations: ["read"] }] },
+  });
+
+  assert.equal("resources" in adapter, false);
+  assert.equal("services" in adapter, false);
+  const prepared = await env.prepareWorkflow();
+  assert.deepEqual(await prepared.toolAdapters.get("frozen")({ input: {} }), {
+    grants: [{ path: "/tools/**", operations: ["read"] }],
+  });
+  assert.equal("resources" in adapter, false);
+  assert.equal("services" in adapter, false);
+});
+
+test("the public observer stays redacted while the trusted storage view remains explicit", async () => {
+  const env = await createConnectorDemo();
+  const result = await env.run({
+    agent: { model: "/models/default", tools: [] },
+    input: "prompt-secret-for-observer",
+    id: "observer-redaction",
+  });
+
+  const snapshot = await env.observer.snapshot(result.root.id);
+  assert.equal(snapshot.redacted, true);
+  assert.equal("request" in snapshot, false);
+  assert.equal("response" in snapshot, false);
+
+  const trustedInspection = await env.observe.inspect(result.root.id);
+  assert.match(trustedInspection.request.messages[0].content, /prompt-secret-for-observer/);
+});

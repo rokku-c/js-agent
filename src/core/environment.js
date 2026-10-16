@@ -112,12 +112,16 @@ export function createEnvironment({
   const modelView = createView(resources, { grants: grants(permissions.model, "permissions.model") });
   const toolsView = createView(resources, { grants: grants(permissions.tools, "permissions.tools") });
   const modelServices = createServiceAuthority(services, { grants: grants(model.serviceGrants, "model.serviceGrants") });
+  const boundToolAdapters = new Map();
   for (const adapter of toolAdapters) {
-    adapter.resources = adapter.resourceGrants === undefined ? toolsView : toolsView.derive({
-      grants: grants(adapter.resourceGrants, "tool adapter resourceGrants"),
-    });
-    adapter.services = createServiceAuthority(services, {
-      grants: grants(adapter.serviceGrants, "tool adapter serviceGrants"),
+    boundToolAdapters.set(adapter.path, {
+      ...adapter,
+      resources: adapter.resourceGrants === undefined ? toolsView : toolsView.derive({
+        grants: grants(adapter.resourceGrants, "tool adapter resourceGrants"),
+      }),
+      services: createServiceAuthority(services, {
+        grants: grants(adapter.serviceGrants, "tool adapter serviceGrants"),
+      }),
     });
   }
   const observerView = createView(storage, { grants: grants(permissions.observer, "permissions.observer") });
@@ -156,7 +160,7 @@ export function createEnvironment({
     const definitions = await catalog();
     const adapters = new Map();
     for (const definition of definitions) {
-      const adapter = toolAdapterByPath.get(definition.path);
+      const adapter = boundToolAdapters.get(definition.path);
       if (!adapter) throw fail(`no trusted adapter supplied for tool path ${definition.path}`, "EACCES");
       const invoke = adapter.invoke;
       adapters.set(definition.name, async ({ input: toolInput, ...adapterOptions }) => invoke({
@@ -235,11 +239,14 @@ export function createEnvironment({
     catalogs: { tools: [...toolPaths] },
     delegation: {
       model: { services: modelServices.describe() },
-      tools: toolAdapters.map((adapter) => ({
-        path: adapter.path,
-        resources: adapter.resources.describe(),
-        services: adapter.services.describe(),
-      })),
+      tools: toolAdapters.map((adapter) => {
+        const bound = boundToolAdapters.get(adapter.path);
+        return {
+          path: adapter.path,
+          resources: bound.resources.describe(),
+          services: bound.services.describe(),
+        };
+      }),
     },
     permissions: Object.fromEntries(VIEW_NAMES.map((name) => [name, permissionDescriptions[name]()])),
     runs: {
