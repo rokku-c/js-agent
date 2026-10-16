@@ -1,15 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { createView } from "../src/kernel/view.js";
+import * as toolResources from "../src/core/tool-resource.js";
 
-import { loadToolDefinition, loadToolResource, toolCatalog } from "../src/core/tool-resource.js";
+const { loadToolDefinition, toolCatalog } = toolResources;
 
-function resources(definitions, { revisions = {}, onRead } = {}) {
+function resources(definitions, { onRead } = {}) {
   const reads = [];
   return {
     reads,
     async read(path, options) {
       reads.push({ path, options });
-      onRead?.(path, options);
+      await onRead?.(path, options);
       if (!Object.hasOwn(definitions, path)) {
         const error = new Error(`missing ${path}`);
         error.code = "ENOENT";
@@ -17,9 +20,7 @@ function resources(definitions, { revisions = {}, onRead } = {}) {
       }
       return definitions[path];
     },
-    async stat(path) {
-      return { revision: revisions[path] };
-    },
+    stat() { assert.fail("metadata loading must not stat resources"); },
   };
 }
 
@@ -33,23 +34,51 @@ const valid = JSON.stringify({
   },
   entry: "entry.js",
 });
+const hash = (body) => `sha256:${createHash("sha256").update(body).digest("hex")}`;
 
-test("loads a normalized tool directory and forwards resource options", async () => {
-  const store = resources({ "/tools/echo/definition.json": valid }, { revisions: { "/tools/echo": "rev-1" } });
-  const definition = await loadToolDefinition(store, "/tools/./echo/", {
-    view: "view-1",
-    revision: "rev-1",
-    maxBytes: 4096,
-    signal: null,
-  });
+test("loads normalized absolute directories in any mount, including root", async () => {
+  for (const [path, base] of [
+    ["/custom//tools/../Echo/./", "/custom/Echo"],
+    ["/tools", "/tools"],
+    ["/../", "/"],
+  ]) {
+    const file = `${base === "/" ? "" : base}/definition.json`;
+    const store = resources({ [file]: valid });
+    const definition = await loadToolDefinition(store, path);
+    assert.equal(definition.path, base);
+    assert.equal(definition.revision, hash(valid));
+    assert.equal(definition.entry, "entry.js");
+    assert.deepEqual(store.reads.map(({ path }) => path), [file]);
+  }
+  const store = resources({});
+  for (const path of ["tools/echo", "", null, 42]) {
+    await assert.rejects(() => loadToolDefinition(store, path), /absolute path/);
+  }
+  assert.equal(store.reads.length, 0);
+});
 
-  assert.equal(definition.path, "/tools/echo");
-  assert.equal(definition.revision, "rev-1");
-  assert.equal(definition.entry, "entry.js");
-  assert.deepEqual(store.reads[0], {
-    path: "/tools/echo/definition.json",
-    options: { encoding: "utf8", maxBytes: 4096, signal: null, view: "view-1", revision: "rev-1" },
+test("uses an exact read-only View grant without requiring stat authority", async () => {
+  const store = resources({ "/mounted/echo/definition.json": valid });
+  const view = createView(store, {
+    grants: [{ path: "/mounted/echo/definition.json", operations: ["read"] }],
   });
+  const definition = await loadToolDefinition(view, "/mounted/echo/");
+  assert.equal(definition.revision, hash(valid));
+  await assert.rejects(() => loadToolDefinition(view, "/outside"), { code: "EACCES" });
+  assert.equal(store.reads.length, 1);
+});
+
+test("pins definition bytes by SHA-256 even when the provider ignores options", async () => {
+  const files = { "/echo/definition.json": valid };
+  const store = resources(files);
+  const revision = hash(valid);
+  assert.equal((await loadToolDefinition(store, "/echo", { revision })).revision, revision);
+  files["/echo/definition.json"] = valid + "\n";
+  await assert.rejects(() => loadToolDefinition(store, "/echo", { revision }), { code: "ESTALE" });
+  assert.equal((await loadToolDefinition(store, "/echo")).revision, hash(valid + "\n"));
+  for (const revision of ["git:abc", "sha256:abc", null, 42]) {
+    await assert.rejects(() => loadToolDefinition(store, "/echo", { revision }), /sha256/);
+  }
 });
 
 test("rejects malformed JSON and invalid definition fields", async () => {
@@ -67,13 +96,6 @@ test("rejects malformed JSON and invalid definition fields", async () => {
   }
 });
 
-test("requires absolute canonical tool paths", async () => {
-  const store = resources({ "/tools/echo/definition.json": valid });
-  await assert.rejects(() => loadToolDefinition(store, "tools/echo"), /absolute path/);
-  await assert.rejects(() => loadToolDefinition(store, "/tools"), /\/tools\/<name>/);
-  await assert.rejects(() => loadToolDefinition(store, "/other/echo"), /\/tools\/<name>/);
-});
-
 test("deep-freezes the descriptor and its schema", async () => {
   const definition = await loadToolDefinition(resources({ "/tools/echo/definition.json": valid }), "/tools/echo");
   assert.equal(Object.isFrozen(definition), true);
@@ -83,27 +105,16 @@ test("deep-freezes the descriptor and its schema", async () => {
   assert.throws(() => { definition.input_schema.properties.value.type = "number"; }, TypeError);
 });
 
-test("does not read or execute entry.js without a trusted adapter", async () => {
-  const store = resources({ "/tools/echo/definition.json": valid, "/tools/echo/entry.js": "throw new Error('must not run')" });
-  const definition = await loadToolResource(store, "/tools/echo");
-  assert.equal(definition.invoke, undefined);
-  assert.equal(Object.hasOwn(definition, "entry"), false);
+test("exports metadata loaders only and never reads an entrypoint", async () => {
+  assert.deepEqual(Object.keys(toolResources).sort(), ["loadToolDefinition", "toolCatalog"]);
+  const store = resources({
+    "/tools/echo/definition.json": valid,
+    "/tools/echo/entry.js": "throw new Error('must not run')",
+  });
+  const definition = await loadToolDefinition(store, "/tools/echo");
+  assert.equal(Object.hasOwn(definition, "invoke"), false);
+  assert.equal(definition.entry, "entry.js");
   assert.deepEqual(store.reads.map(({ path }) => path), ["/tools/echo/definition.json"]);
-});
-
-test("binds only an explicit trusted invoke adapter", async () => {
-  const calls = [];
-  const adapter = async (input, context) => {
-    calls.push({ input, context });
-    return input.value;
-  };
-  const definition = await loadToolResource(
-    resources({ "/tools/echo/definition.json": valid }, { revisions: { "/tools/echo": "r" } }),
-    "/tools/echo",
-    { invokeAdapters: { echo: adapter }, revision: "r" },
-  );
-  assert.equal(await definition.invoke({ value: "ok" }, { signal: "s" }), "ok");
-  assert.deepEqual(calls[0].context, { signal: "s", path: "/tools/echo", revision: "r", view: undefined });
 });
 
 test("builds an explicit catalog and rejects duplicate names", async () => {
@@ -117,4 +128,52 @@ test("builds an explicit catalog and rejects duplicate names", async () => {
   assert.equal(Object.isFrozen(catalog), true);
   assert.deepEqual(catalog.map(({ name }) => name), ["first", "second"]);
   await assert.rejects(() => toolCatalog(store, ["/tools/first", "/tools/alias"]), { code: "EEXIST" });
+});
+
+test("snapshots catalog paths and options before the first awaited read", async () => {
+  const second = valid.replace('"echo"', '"second"');
+  const controller = new AbortController();
+  const paths = ["/first", "/second/./"];
+  const options = { maxBytes: 4096, signal: controller.signal };
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const store = resources({
+    "/first/definition.json": valid,
+    "/second/definition.json": second,
+  }, { onRead: (path) => path === "/first/definition.json" ? gate : undefined });
+  const pending = toolCatalog(store, paths, options);
+  paths[1] = "/unselected";
+  paths.push("/extra");
+  options.maxBytes = 0;
+  options.revision = hash("different content");
+  options.signal = AbortSignal.abort();
+  release();
+  const catalog = await pending;
+  assert.deepEqual(catalog.map(({ path }) => path), ["/first", "/second"]);
+  assert.deepEqual(catalog.map(({ revision }) => revision), [hash(valid), hash(second)]);
+  assert.ok(store.reads.every(({ options }) => options.signal === controller.signal));
+});
+
+test("snapshots single-definition options before the awaited read", async () => {
+  const options = { revision: hash(valid), maxBytes: 4096 };
+  const store = resources({ "/echo/definition.json": valid }, { onRead() {
+    options.revision = hash("other");
+    options.maxBytes = 0;
+    options.signal = AbortSignal.abort();
+  } });
+  assert.equal((await loadToolDefinition(store, "/echo", options)).revision, hash(valid));
+});
+
+test("enforces byte limits and cancellation through the reference resolver", async () => {
+  const bytes = new TextEncoder().encode(valid.replace("Echo input", "Echo β"));
+  const store = resources({ "/echo/definition.json": bytes });
+  assert.equal((await loadToolDefinition(store, "/echo", { maxBytes: bytes.length })).revision, hash(bytes));
+  await assert.rejects(() => loadToolDefinition(store, "/echo", { maxBytes: bytes.length - 1 }), { code: "EOVERFLOW" });
+  const controller = new AbortController();
+  const reason = new Error("cancelled");
+  controller.abort(reason);
+  await assert.rejects(() => loadToolDefinition(store, "/echo", { signal: controller.signal }), (e) => e === reason);
+  const duringRead = new AbortController();
+  const cancelling = resources({ "/echo/definition.json": valid }, { onRead() { duringRead.abort(reason); } });
+  await assert.rejects(() => loadToolDefinition(cancelling, "/echo", { signal: duringRead.signal }), (e) => e === reason);
 });

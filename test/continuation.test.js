@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildContinuation, continuationPlan } from "../src/core/continuation.js";
+import { buildContinuation } from "../src/core/continuation.js";
 
 function response() {
   return {
@@ -14,7 +14,7 @@ function response() {
   };
 }
 
-test("continuation preserves provider blocks and assembles ordered messages", () => {
+test("continuation preserves provider blocks and orders the tail by parent tool calls", () => {
   const request = buildContinuation({
     parentResponse: response(),
     toolResults: [
@@ -30,8 +30,8 @@ test("continuation preserves provider blocks and assembles ordered messages", ()
       {
         role: "user",
         content: [
-          { type: "tool_result", tool_use_id: "t2", content: [{ type: "text", text: "second" }] },
           { type: "tool_result", tool_use_id: "t1", content: "first", is_error: true },
+          { type: "tool_result", tool_use_id: "t2", content: [{ type: "text", text: "second" }] },
         ],
       },
       { role: "user", content: "continue with the findings" },
@@ -92,7 +92,7 @@ test("continuation validates complete, unique tool result batches", () => {
 
 test("continuation rejects malformed parent and result shapes", () => {
   assert.throws(() => buildContinuation({ parentResponse: {}, toolResults: [] }), (error) => error.code === "EINVAL");
-  assert.throws(() => buildContinuation({ parentResponse: { content: [] }, toolResults: [{}] }), (error) => error.code === "EINVAL");
+  assert.throws(() => buildContinuation({ parentResponse: response(), toolResults: [{}] }), (error) => error.code === "EINVAL");
   assert.throws(() => buildContinuation({ parentResponse: { content: [] }, toolResults: [], input: null }), (error) => error.code === "EINVAL");
   assert.throws(() => buildContinuation({ parentResponse: { content: [{ type: "tool_use" }] }, toolResults: [] }), (error) => error.code === "EINVAL");
 });
@@ -122,27 +122,51 @@ test("returned request is deeply immutable and detached from caller arrays", () 
   assert.throws(() => { request.messages[0].content[0].thinking = "nope"; }, TypeError);
 });
 
-test("continuationPlan returns frozen workflow metadata with the request", () => {
-  const plan = continuationPlan({
-    parentInvocation: { id: "inv-0" },
-    parentResponse: { content: [{ type: "tool_use", id: "t1", name: "read", input: {} }] },
-    toolResults: [{ tool_use_id: "t1", content: "done" }],
-    nextAgent: "/agents/reviewer",
-    nextInput: "continue",
-  });
+test("continuation rejects parents without tool calls, even with an empty batch", () => {
+  for (const content of [[], [{ type: "text", text: "done" }]]) {
+    for (const toolResults of [[], [{ tool_use_id: "t1", content: "unexpected" }]]) {
+      assert.throws(
+        () => buildContinuation({ parentResponse: { content }, toolResults }),
+        { code: "EINVAL", message: /at least one tool_use/ },
+      );
+    }
+  }
+});
 
-  assert.deepEqual(plan, {
-    parent: { id: "inv-0" },
-    agent: "/agents/reviewer",
-    input: "continue",
-    request: {
-      messages: [
-        { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "read", input: {} }] },
-        { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "done" }] },
-        { role: "user", content: "continue" },
-      ],
-    },
-  });
-  assert.ok(Object.isFrozen(plan));
-  assert.ok(Object.isFrozen(plan.request.messages[1].content[0]));
+test("clone accepts depth 64 and rejects depth 65 in parent and result content", () => {
+  function nested(edges) {
+    let value = "leaf";
+    for (let i = 0; i < edges; i++) value = { child: value };
+    return value;
+  }
+
+  for (const location of ["parent", "result"]) {
+    function buildAtDepth(depth) {
+      const parentResponse = { content: [{ type: "tool_use", id: "t1" }] };
+      const toolResults = [{ tool_use_id: "t1", content: "done" }];
+      if (location === "parent") {
+        // content -> block -> payload consumes two edges from the clone root.
+        parentResponse.content.push({ type: "provider_block", payload: nested(depth - 2) });
+      } else {
+        // result -> content -> block -> payload consumes three edges.
+        toolResults[0].content = [{ type: "provider_block", payload: nested(depth - 3) }];
+      }
+      return buildContinuation({ parentResponse, toolResults });
+    }
+
+    assert.doesNotThrow(() => buildAtDepth(64), location);
+    assert.throws(() => buildAtDepth(65), { code: "EINVAL", message: /clone depth 64/ }, location);
+  }
+});
+
+test("continuation tail includes optional input only when supplied", () => {
+  const options = {
+    parentResponse: { content: [{ type: "tool_use", id: "t1" }] },
+    toolResults: [{ tool_use_id: "t1", content: "done", is_error: false }],
+  };
+  const tail = buildContinuation(options);
+  assert.deepEqual(Object.keys(tail), ["messages"]);
+  assert.equal(tail.messages.length, 2);
+  assert.deepEqual(tail.messages[1].content, [{ type: "tool_result", tool_use_id: "t1", content: "done" }]);
+  assert.deepEqual(buildContinuation({ ...options, input: "" }).messages.at(-1), { role: "user", content: "" });
 });

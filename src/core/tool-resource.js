@@ -1,95 +1,32 @@
-// Resource-backed tool definitions.
-//
-// This module deliberately stops at metadata. An `entry` field is descriptive only; this
-// loader never reads, imports, evaluates, or otherwise executes entry.js. A host that wants
-// a callable descriptor must provide an explicit trusted adapter map to loadToolResource.
-
+// Resource-backed tool metadata. Entry sources are never read or executed.
 import { normalize } from "../kernel/paths.js";
 import { VfsError } from "../kernel/errors.js";
+import { resolveReference } from "./references.js";
 
 const DEFAULT_MAX_BYTES = 1024 * 1024;
 const TOOL_NAME = /^[a-z][a-z0-9_-]*$/u;
 const DEFINITION_FIELDS = new Set(["name", "description", "input_schema", "entry"]);
-const encoder = new TextEncoder();
-const decoder = new TextDecoder("utf-8", { fatal: true });
 
 function fail(detail, code = "EINVAL", path = null) {
   throw new VfsError(code, detail, path ? { path } : undefined);
-}
-
-function checkSignal(signal) {
-  if (!signal?.aborted) return;
-  throw signal.reason ?? new DOMException("The operation was aborted", "AbortError");
-}
-
-function validateMaxBytes(maxBytes) {
-  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
-    fail("maxBytes must be a non-negative safe integer");
-  }
 }
 
 function toolPath(path) {
   if (typeof path !== "string" || !path.startsWith("/")) {
     fail("tool path must be an absolute path");
   }
-
-  const normalized = normalize(path);
-  const parts = normalized === "/" ? [] : normalized.slice(1).split("/");
-  if (parts.length !== 2 || parts[0] !== "tools" || !TOOL_NAME.test(parts[1])) {
-    fail("tool path must be a /tools/<name> directory", "EINVAL", normalized);
-  }
-  return normalized;
+  return normalize(path);
 }
 
-function readOptions({ view, revision, maxBytes, signal }) {
-  const options = { encoding: "utf8", maxBytes, signal };
-  if (view !== undefined) options.view = view;
-  if (revision !== undefined) options.revision = revision;
-  return options;
-}
-
-function statOptions({ view, signal }) {
-  const options = { signal };
-  if (view !== undefined) options.view = view;
-  return options;
-}
-
-function toText(raw, path, maxBytes) {
-  let bytes;
-  let text;
-
-  if (typeof raw === "string") {
-    text = raw;
-    bytes = encoder.encode(raw);
-  } else if (raw instanceof Uint8Array) {
-    bytes = new Uint8Array(raw);
-    try {
-      text = decoder.decode(bytes);
-    } catch (cause) {
-      fail("definition.json is not valid UTF-8", "EINVAL", path);
-    }
-  } else if (raw instanceof ArrayBuffer) {
-    bytes = new Uint8Array(raw);
-    try {
-      text = decoder.decode(bytes);
-    } catch (cause) {
-      fail("definition.json is not valid UTF-8", "EINVAL", path);
-    }
-  } else if (ArrayBuffer.isView(raw)) {
-    bytes = new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
-    try {
-      text = decoder.decode(bytes);
-    } catch (cause) {
-      fail("definition.json is not valid UTF-8", "EINVAL", path);
-    }
-  } else {
-    fail("definition.json must be UTF-8 text or bytes", "EINVAL", path);
+function snapshotOptions({ revision, maxBytes = DEFAULT_MAX_BYTES, signal } = {}) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+    fail("maxBytes must be a non-negative safe integer");
   }
-
-  if (bytes.byteLength > maxBytes) {
-    fail(`definition.json is ${bytes.byteLength} bytes, over the ${maxBytes} limit`, "EOVERFLOW", path);
+  if (revision !== undefined &&
+      (typeof revision !== "string" || !/^sha256:[0-9a-f]{64}$/.test(revision))) {
+    fail("revision must be a sha256:<hex> full-content revision");
   }
-  return text;
+  return { revision, maxBytes, signal };
 }
 
 function plainObject(value, label) {
@@ -174,120 +111,46 @@ function parseDefinition(text, definitionPath) {
   return validateDefinition(value, definitionPath);
 }
 
-async function definitionParts(resources, path, options) {
-  if (!resources || typeof resources.read !== "function") {
-    fail("resources must provide read(path, options)");
-  }
-  const base = toolPath(path);
-  const definitionPath = `${base}/definition.json`;
-  const { maxBytes = DEFAULT_MAX_BYTES, signal } = options;
-  validateMaxBytes(maxBytes);
-  checkSignal(signal);
-
-  const raw = await resources.read(definitionPath, readOptions({ ...options, maxBytes }));
-  checkSignal(signal);
-  const definition = parseDefinition(toText(raw, definitionPath, maxBytes), definitionPath);
-
-  let stat;
-  if (typeof resources.stat === "function") {
-    stat = await resources.stat(base, statOptions(options));
-    checkSignal(signal);
-  }
-
-  const actualRevision = stat?.revision;
-  if (actualRevision !== undefined && typeof actualRevision !== "string") {
-    fail("tool resource revision must be a string", "EINVAL", base);
-  }
-  if (options.revision !== undefined && typeof options.revision !== "string") {
-    fail("revision must be a string");
-  }
-  if (options.revision !== undefined && actualRevision !== undefined && options.revision !== actualRevision) {
-    fail(`tool resource revision mismatch: expected ${options.revision}, got ${actualRevision}`, "ESTALE", base);
-  }
-
-  return {
-    base,
-    definitionPath,
-    definition,
-    revision: actualRevision ?? options.revision,
-  };
-}
-
-function definitionDescriptor(parts) {
-  const { base, definition, revision } = parts;
-  const descriptor = {
-    path: base,
-    name: definition.name,
-    description: definition.description,
-    input_schema: definition.input_schema,
-    revision,
-  };
-  if (definition.entry !== undefined) descriptor.entry = definition.entry;
-  return deepFreeze(descriptor);
+async function loadDefinition(resources, path, { revision, maxBytes, signal }) {
+  const definitionPath = `${path === "/" ? "" : path}/definition.json`;
+  const ref = revision === undefined
+    ? definitionPath
+    : { $ref: definitionPath, mode: "pinned", revision };
+  const { value, provenance } = await resolveReference(resources, ref, { maxBytes, signal });
+  const definition = parseDefinition(value, definitionPath);
+  return deepFreeze({ path, ...definition, revision: provenance.contentHash });
 }
 
 /**
- * Load and validate the metadata for one resource-backed tool.
+ * Read exactly definition.json under an absolute tool directory through the supplied
+ * resource facade. The returned revision is always the SHA-256 hash of those bytes.
+ * An optional revision asserts that hash; it does not retrieve historical content.
+ * Entry metadata is retained without reading or executing the entrypoint.
  *
- * `entry` is retained as metadata, but is never read or executed.
  * @param {{read(path: string, options?: object): Promise<string|Uint8Array|ArrayBuffer>}} resources
- * @param {string} path absolute `/tools/<name>` directory path
- * @param {{view?: unknown, revision?: string, maxBytes?: number, signal?: AbortSignal}} options
+ * @param {string} path absolute tool directory, in any mount
+ * @param {{revision?: string, maxBytes?: number, signal?: AbortSignal}} options
  */
 export async function loadToolDefinition(resources, path, options = {}) {
-  return definitionDescriptor(await definitionParts(resources, path, options));
+  const base = toolPath(path);
+  const snapshot = snapshotOptions(options);
+  return loadDefinition(resources, base, snapshot);
 }
 
-function adapterFrom(map, descriptor) {
-  if (map == null) return undefined;
-  if (map instanceof Map) return map.get(descriptor.name) ?? map.get(descriptor.path);
-  if (typeof map !== "object") fail("trusted invoke adapters must be an object or Map");
-  if (Object.hasOwn(map, descriptor.name)) return map[descriptor.name];
-  if (Object.hasOwn(map, descriptor.path)) return map[descriptor.path];
-  return undefined;
-}
-
-/**
- * Load a definition and, only when explicitly supplied, bind a trusted invoke adapter.
- * No adapter means `invoke` is undefined. The definition's entrypoint is never executed.
- *
- * `invokeAdapters` is intentionally an option rather than a property read from the
- * resource tree. Resource content cannot grant itself executable behavior.
- */
-export async function loadToolResource(resources, path, options = {}) {
-  const definition = await loadToolDefinition(resources, path, options);
-  const { entry: _entry, ...metadata } = definition;
-  const adapter = adapterFrom(options.invokeAdapters, metadata);
-  if (adapter !== undefined && typeof adapter !== "function") {
-    fail(`trusted invoke adapter for '${metadata.name}' must be a function`);
-  }
-  if (adapter === undefined) return deepFreeze({ ...metadata, invoke: undefined });
-
-  const invoke = (input, invokeOptions = {}) => adapter(input, {
-    ...invokeOptions,
-    path: metadata.path,
-    revision: metadata.revision,
-    view: invokeOptions.view ?? options.view,
-    signal: invokeOptions.signal ?? options.signal,
-  });
-  return deepFreeze({ ...metadata, invoke });
-}
-
-/**
- * Resolve an explicit list of tool directories. There is no directory discovery here.
- * The returned array and each descriptor are immutable.
- */
+/** Resolve explicit directories in order, rejecting duplicate names without discovery. */
 export async function toolCatalog(resources, paths, options = {}) {
   if (!Array.isArray(paths)) fail("tool catalog paths must be an array");
+  // Capture every caller-owned selection before the first resource read can yield.
+  const selectedPaths = Array.from(paths, toolPath);
+  const snapshot = snapshotOptions(options);
   const catalog = [];
-  const names = new Map();
-  for (const path of paths) {
-    const definition = await loadToolDefinition(resources, path, options);
-    const prior = names.get(definition.name);
-    if (prior !== undefined) {
+  const names = new Set();
+  for (const path of selectedPaths) {
+    const definition = await loadDefinition(resources, path, snapshot);
+    if (names.has(definition.name)) {
       fail(`duplicate tool name '${definition.name}'`, "EEXIST", definition.path);
     }
-    names.set(definition.name, definition.path);
+    names.add(definition.name);
     catalog.push(definition);
   }
   return Object.freeze(catalog);

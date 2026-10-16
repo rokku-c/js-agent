@@ -48,6 +48,11 @@ export const DEFAULT_MAX_TOKENS = 32_000;
 export const MAX_OUTPUT_TOKENS = 128_000;
 
 const blocksOf = (body, kind) => (body?.content ?? []).filter((b) => b?.type === kind);
+
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  throw signal.reason ?? new DOMException("The operation was aborted", "AbortError");
+}
 const textOf = (body) =>
   blocksOf(body, "text")
     .map((b) => b.text ?? "")
@@ -298,6 +303,7 @@ async function loop(vfs, opts, initialContext) {
   await using handle = await vfs.open(provider.path, "r+");
 
   while (!done && rounds < roundCap) {
+    throwIfAborted(signal);
     // proactive fold: slim down before the request rather than after it fails
     if (!noFold && estNext >= contextBudget) {
       const f = await contextFolding.apply(vfs, messages, {
@@ -347,6 +353,9 @@ async function loop(vfs, opts, initialContext) {
           })
         : await handle.send(request, { signal });
     } catch (e) {
+      // Cancellation belongs to the run owner. It must not become an ordinary model error,
+      // trigger overflow recovery, or permit another round.
+      if (signal?.aborted) throwIfAborted(signal);
       const msg = reason(e);
       // overflow: fold part of it and retry. capped at 3 globally so a pointless fold
       // cannot spin forever.
@@ -418,6 +427,7 @@ async function loop(vfs, opts, initialContext) {
     } else {
       const results = [];
       for (const call of calls) {
+        throwIfAborted(signal);
         const tool = byName.get(call.name);
         await streamLog.emit("tool.call", { round: rounds, id: call.id, name: call.name, input: call.input });
         onTool?.({ phase: "call", name: call.name, input: call.input });
@@ -436,6 +446,7 @@ async function loop(vfs, opts, initialContext) {
           continue;
         }
 
+        throwIfAborted(signal);
         const r = await invokeTool({
           vfs,
           tool,

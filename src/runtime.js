@@ -4,5 +4,5 @@ export { resolveReference, resolveArguments } from './core/references.js';
 export { createRunStore } from './core/run-store.js';
 export { invokeOnce } from './core/invocation.js';
 
-export { buildContinuation, continuationPlan } from './core/continuation.js';
-export { loadToolDefinition, loadToolResource, toolCatalog } from './core/tool-resource.js';
+export { buildContinuation } from './core/continuation.js';
+export { loadToolDefinition, toolCatalog } from './core/tool-resource.js';

@@ -9,6 +9,15 @@ import { Worker } from "node:worker_threads";
 import { VfsError } from "../kernel/errors.js";
 
 const ENTRY = new URL("./worker-entry.js", import.meta.url);
+const CLEANUP_TIMEOUT_MS = 100;
+
+function cancellationResult() {
+  return { ok: false, error: "the tool was cancelled before it produced a result", cancelled: true };
+}
+
+function closeHandle(handle) {
+  return Promise.resolve().then(() => handle?.close?.()).catch(() => undefined);
+}
 
 /**
  * Run one tool in a worker thread, with a deadline that actually holds.
@@ -25,6 +34,10 @@ const ENTRY = new URL("./worker-entry.js", import.meta.url);
  * @returns {Promise<{ok: boolean, value?: any, error?: string, timedOut?: boolean}>}
  */
 export function runInWorker({ vfs, toolName, input, cwd, timeoutMs, source, onOutput, signal }) {
+  // Do this before constructing the Worker. A pre-aborted call must not load code or
+  // create a thread whose startup races the cancellation.
+  if (signal?.aborted) return Promise.resolve(cancellationResult());
+
   return new Promise((resolve) => {
     const worker = new Worker(ENTRY, {
       workerData: { tool: toolName, input, cwd, source },
@@ -36,31 +49,35 @@ export function runInWorker({ vfs, toolName, input, cwd, timeoutMs, source, onOu
 
     // handles the worker opened, so a killed worker's conversations are closed here
     const handles = new Map();
+    let nextHandleId = 1;
     let settled = false;
     let timedOut = false;
 
-    const finish = (result) => {
+    const finish = async (result) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       signal?.removeEventListener?.("abort", onAbort);
-      for (const handle of handles.values()) Promise.resolve(handle.close?.()).catch(() => {});
+      const closing = [...handles.values()].map(closeHandle);
       handles.clear();
-      worker.terminate().catch(() => {});
+      // Closing a provider handle must not hold cancellation forever. The worker itself is
+      // still terminated and awaited, so no late worker activity can escape this call.
+      await Promise.race([
+        Promise.all(closing),
+        new Promise((resolveClose) => setTimeout(resolveClose, CLEANUP_TIMEOUT_MS)),
+      ]);
+      await worker.terminate().catch(() => {});
       resolve(result);
     };
 
     const onAbort = () => {
-      if (settled) return;
-      worker.terminate().catch(() => {});
-      finish({ ok: false, error: "the tool was cancelled before it produced a result", cancelled: true });
+      void finish(cancellationResult());
     };
 
     const timer = setTimeout(async () => {
       timedOut = true;
       // terminate, not a signal: a tight loop takes no signal, and this does stop it
-      await worker.terminate().catch(() => {});
-      finish({
+      await finish({
         ok: false,
         timedOut: true,
         error:
@@ -75,6 +92,7 @@ export function runInWorker({ vfs, toolName, input, cwd, timeoutMs, source, onOu
     else signal?.addEventListener?.("abort", onAbort, { once: true });
 
     worker.on("message", async (m) => {
+      if (settled) return;
       if (m.type === "done") return finish({ ok: true, value: m.value });
       if (m.type === "failed") {
         return finish({ ok: false, error: formatError(m.error) });
@@ -97,18 +115,22 @@ export function runInWorker({ vfs, toolName, input, cwd, timeoutMs, source, onOu
     // every operation the worker may perform. it is short on purpose, and it is the whole
     // of what crosses the boundary.
     const reply = (id, promise) => {
-      promise.then(
-        (value) => worker.postMessage({ type: "reply", id, value }),
-        (e) =>
-          worker.postMessage({
+      Promise.resolve(promise).then(
+        (value) => {
+          if (!settled) worker.postMessage({ type: "reply", id, value });
+        },
+        (e) => {
+          if (!settled) worker.postMessage({
             type: "reply",
             id,
             error: { name: e?.name, message: e?.message ?? String(e), code: e?.code, hint: e?.hint, path: e?.path },
-          })
+          });
+        },
       );
     };
 
     const handleSyscall = (m) => {
+      if (settled) return;
       const { id, op, args } = m;
       try {
         switch (op) {
@@ -140,7 +162,11 @@ export function runInWorker({ vfs, toolName, input, cwd, timeoutMs, source, onOu
               id,
               (async () => {
                 const handle = await vfs.open(args[0], args[1]);
-                const handleId = handles.size + 1;
+                if (settled) {
+                  await closeHandle(handle);
+                  return null;
+                }
+                const handleId = nextHandleId++;
                 handles.set(handleId, handle);
                 return handleId;
               })()
@@ -170,9 +196,9 @@ export function runInWorker({ vfs, toolName, input, cwd, timeoutMs, source, onOu
                   if (settled) break;
                   worker.postMessage({ type: "chunk", id, value: item });
                 }
-                worker.postMessage({ type: "end", id });
+                if (!settled) worker.postMessage({ type: "end", id });
               } catch (e) {
-                worker.postMessage({
+                if (!settled) worker.postMessage({
                   type: "fail",
                   id,
                   error: { message: e?.message ?? String(e), code: e?.code },
@@ -186,7 +212,7 @@ export function runInWorker({ vfs, toolName, input, cwd, timeoutMs, source, onOu
           case "handle.close": {
             const handle = handles.get(args[0]);
             handles.delete(args[0]);
-            return reply(id, Promise.resolve(handle?.close?.()).then(() => null));
+            return reply(id, closeHandle(handle).then(() => null));
           }
 
           default:

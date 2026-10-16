@@ -9,7 +9,8 @@ function fail(message, code = "EINVAL") {
  * Provider responses are JSON data, so rejecting executable or host objects is
  * preferable to silently changing them while materializing a request.
  */
-function clone(value, label = "value", seen = new WeakSet()) {
+function clone(value, label = "value", seen = new WeakSet(), depth = 0) {
+  if (depth > 64) throw fail(`${label} exceeds clone depth 64`);
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
   if (typeof value === "number") {
     if (!Number.isFinite(value)) throw fail(`${label} contains a non-finite number`);
@@ -22,7 +23,7 @@ function clone(value, label = "value", seen = new WeakSet()) {
   if (seen.has(value)) throw fail(`${label} contains a cycle`);
   seen.add(value);
   try {
-    if (Array.isArray(value)) return value.map((item, index) => clone(item, `${label}[${index}]`, seen));
+    if (Array.isArray(value)) return value.map((item, index) => clone(item, `${label}[${index}]`, seen, depth + 1));
 
     const prototype = Object.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) {
@@ -37,7 +38,7 @@ function clone(value, label = "value", seen = new WeakSet()) {
     const output = {};
     for (const key of Object.keys(value)) {
       Object.defineProperty(output, key, {
-        value: clone(value[key], `${label}.${key}`, seen),
+        value: clone(value[key], `${label}.${key}`, seen, depth + 1),
         enumerable: true,
         writable: true,
         configurable: true,
@@ -101,10 +102,12 @@ function parentToolUses(content) {
 }
 
 /**
- * Assemble the next model request after a tool batch.
- *
- * This is deliberately a pure request builder: it neither dispatches a model
- * request nor invokes a tool.
+ * Assemble a frozen canonical message tail after a tool batch, not a full request.
+ * The caller must append these messages to the prior request history and supply
+ * the remaining request configuration. Results follow the parent tool-call order.
+ * This pure helper neither dispatches a model request nor invokes a tool.
+ * JSON clone depth is limited to 64 edges from parentResponse.content or each
+ * toolResults entry (the clone root is depth 0); deeper data fails with EINVAL.
  */
 export function buildContinuation({ parentResponse, toolResults, input } = {}) {
   object(parentResponse, "parentResponse");
@@ -114,15 +117,14 @@ export function buildContinuation({ parentResponse, toolResults, input } = {}) {
 
   const parentContent = blocks(parentResponse.content, "parentResponse.content");
   const parentIds = parentToolUses(parentContent);
-  const resultBlocks = [];
-  const resultIds = new Set();
+  if (parentIds.size === 0) throw fail("parentResponse must contain at least one tool_use");
+  const resultsById = new Map();
 
   for (const [index, rawResult] of toolResults.entries()) {
     object(rawResult, `toolResults[${index}]`);
     const result = clone(rawResult, `toolResults[${index}]`);
     const toolUseId = id(result.tool_use_id, `toolResults[${index}].tool_use_id`);
-    if (resultIds.has(toolUseId)) throw fail(`duplicate tool result id: ${toolUseId}`, "EEXIST");
-    resultIds.add(toolUseId);
+    if (resultsById.has(toolUseId)) throw fail(`duplicate tool result id: ${toolUseId}`, "EEXIST");
     if (!parentIds.has(toolUseId)) throw fail(`unknown tool result id: ${toolUseId}`);
     if (!Object.prototype.hasOwnProperty.call(result, "content")) {
       throw fail(`toolResults[${index}].content is required`);
@@ -137,32 +139,18 @@ export function buildContinuation({ parentResponse, toolResults, input } = {}) {
       content: resultContent(result.content, `toolResults[${index}].content`),
     };
     if (result.is_error === true) resultBlock.is_error = true;
-    resultBlocks.push(resultBlock);
+    resultsById.set(toolUseId, resultBlock);
   }
 
   for (const toolUseId of parentIds) {
-    if (!resultIds.has(toolUseId)) throw fail(`missing tool result for tool_use id: ${toolUseId}`);
+    if (!resultsById.has(toolUseId)) throw fail(`missing tool result for tool_use id: ${toolUseId}`);
   }
 
+  const resultBlocks = [...parentIds].map((toolUseId) => resultsById.get(toolUseId));
   const messages = [
     { role: "assistant", content: parentContent },
     { role: "user", content: resultBlocks },
   ];
   if (input !== undefined) messages.push({ role: "user", content: input });
   return freeze({ messages });
-}
-
-/**
- * Attach the pure continuation request to the metadata needed by a workflow.
- * The returned shape follows InvocationRequest naming for the next request.
- */
-export function continuationPlan({ parentInvocation, parentResponse, toolResults, nextAgent, nextInput } = {}) {
-  const request = buildContinuation({ parentResponse, toolResults, input: nextInput });
-  const plan = {
-    parent: clone(parentInvocation, "parentInvocation"),
-    agent: clone(nextAgent, "nextAgent"),
-    request,
-  };
-  if (nextInput !== undefined) plan.input = nextInput;
-  return freeze(plan);
 }

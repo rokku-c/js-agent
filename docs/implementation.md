@@ -16,7 +16,6 @@ independent: callers can use a resource View or reference resolver without runni
 | `createRunStore(storage)` | Record request, materialized plan, response, status and events | Volatile milestone; atomic rename is not an fsync or distributed transaction guarantee |
 | `invokeOnce(options)` | Resolve a simple AgentSpec and dispatch exactly one model request | No tool execution, retries, session, or continuation scheduler |
 | `loadToolDefinition(resources, path)` | Load and validate a resource-backed tool definition | Metadata only; `entry.js` is never executed |
-| `loadToolResource(resources, path, options)` | Bind an optional explicitly supplied trusted adapter | Resource content cannot grant itself executable behavior |
 | `buildContinuation(options)` | Build the next canonical request from one response and a complete tool batch | Pure builder; no model call or tool execution |
 
 The legacy CLI remains available. It now passes immutable run context through tools and nested
@@ -83,7 +82,7 @@ by concurrency itself.
 
 ## Verification and next steps
 
-New focused suites cover Views, references, overlapping legacy runs and one-request execution.
+New focused suites cover Views, references, overlapping legacy runs, one-request execution, continuations, tool metadata, and worker cancellation.
 The offline example demonstrates their composition without credentials or network access.
 
 Next milestones should add bounded model/stream lifecycle adapters, reference-aware dynamic
@@ -101,6 +100,6 @@ automatic session loop.
 ## Dynamic tool definitions
 
 `loadToolDefinition` reads `/tools/<name>/definition.json` and validates its JSON schema.
-`loadToolResource` can bind an adapter only when the host supplies it explicitly; an `entry.js`
-field is descriptive metadata and is never imported or evaluated by this milestone. This keeps
-dynamic tool metadata composable without accidentally turning resource content into ambient code.
+An `entry.js` field is descriptive metadata and is never imported or evaluated by this milestone.
+The host must bind executable behavior explicitly. This keeps dynamic tool metadata composable
+without accidentally turning resource content into ambient code.

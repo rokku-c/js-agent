@@ -49,6 +49,11 @@ export function describeCall(tool, input) {
  * @param {(m: string) => void} [opts.log]
  * @param {boolean} [opts.inProcess]    skip the worker — for tests, and for debugging
  */
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  throw signal.reason ?? new DOMException("The operation was aborted", "AbortError");
+}
+
 export async function invokeTool({
   vfs,
   tool,
@@ -67,6 +72,8 @@ export async function invokeTool({
   const started = Date.now();
   let outcome;
 
+  // Cancellation is control flow for the enclosing run, not a tool error for the model.
+  throwIfAborted(signal);
   try {
     const validated = validateInput(tool, input ?? {});
     const command = describeCall(tool, validated);
@@ -110,9 +117,11 @@ export async function invokeTool({
       outcome = { ok: true, value };
     }
   } catch (e) {
+    if (signal?.aborted) throwIfAborted(signal);
     outcome = { ok: false, raw: reason(e) };
   }
 
+  throwIfAborted(signal);
   const text = outcome.ok ? renderValue(outcome.value) : String(outcome.raw ?? "the tool failed");
   const clamped =
     text.length > maxOutput
