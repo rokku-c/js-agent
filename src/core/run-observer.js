@@ -4,6 +4,7 @@
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const TERMINAL = new Set(["completed", "completed_with_tool_calls", "failed", "unknown", "cancelled"]);
 const STATUSES = new Set(["reserved", "started", ...TERMINAL]);
+const STORAGE_MODES = new Set(["volatile", "durable"]);
 const EVENT_KINDS = new Set(["started", "completed", "failed", "unknown", "cancelled"]);
 const ISO_TIME = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/;
 
@@ -84,9 +85,14 @@ function parseStatus(id, result) {
     return { status: null, partial: true, issue: "EILSEQ" };
   }
   if (!value || typeof value !== "object" || value.id !== id || !STATUSES.has(value.status)) {
-    return { status: null, partial: true, issue: "EPROTO" };
+    return { status: null, storage: null, partial: true, issue: "EPROTO" };
   }
-  return { status: value.status, partial: false, issue: null };
+  return {
+    status: value.status,
+    storage: STORAGE_MODES.has(value.storage) ? value.storage : null,
+    partial: false,
+    issue: null,
+  };
 }
 
 function parseEvents(result) {
@@ -183,6 +189,7 @@ export function createRunObserver(vfs, { root = "/runs", interval = 100 } = {}) 
     return {
       id,
       status: status.status,
+      ...(status.storage ? { storage: status.storage } : {}),
       terminal: status.status != null && TERMINAL.has(status.status),
       sequence: events.sequence,
       events: events.events,

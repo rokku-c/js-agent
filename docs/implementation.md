@@ -115,8 +115,11 @@ and observer—around the existing one-request primitives. Model and tool adapte
 host functions; the facade makes that boundary visible and does not claim to sandbox them.
 
 `createRunObserver` lists and watches redacted volatile RunState snapshots. It treats malformed
-or incomplete event tails as partial observations rather than inventing success. It does not
-turn volatile storage into durable recovery.
+or incomplete event tails as partial observations rather than inventing success. `createEnvironment`
+exposes the same facade as `environment.observer`, scoped to the Environment's observer View; its
+`storage` field reports only the recognized RunStore mode. A persistent backend can therefore be
+remounted and observed through the same resource operations, while the RunStore remains volatile
+unless a backend and commit protocol establish stronger guarantees.
 
 `createWorkflowGraph` persists node and edge state above individual RunState records. It supports
 concurrent branches, joins, keyed continuation deduplication, aggregate cancellation, and

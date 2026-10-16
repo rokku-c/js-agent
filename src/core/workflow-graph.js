@@ -529,14 +529,17 @@ export function createWorkflowGraph({ storage, store, root = "/workflows" } = {}
       for (const item of inspected.reconciliation) {
         const node = state.nodes.find((candidate) => candidate.key === item.key);
         if (!node || node.status !== "running") continue;
+        const edge = state.edges.find((candidate) => candidate.to === node.key);
         if (!INVOCATION_TERMINAL.has(item.persistedStatus)) {
           node.status = "unknown";
           node.invocationStatus = "unknown";
           node.recovery = "process_restart";
+          if (edge) edge.status = "unknown";
           recovered = true;
         } else if (INVOCATION_TERMINAL.has(item.persistedStatus)) {
           node.status = item.persistedStatus;
           node.invocationStatus = item.persistedStatus;
+          if (edge) edge.status = item.persistedStatus;
           recovered = true;
         }
       }

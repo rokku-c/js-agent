@@ -111,6 +111,13 @@ test("createEnvironment runs a resource-backed app with isolated adapter and obs
   const observed = await env.observe.inspect(result.root.id);
   assert.equal(observed.status.status, "completed_with_tool_calls");
   assert.deepEqual(observed.events.map((event) => event.kind), ["started", "completed"]);
+  const redacted = await env.observer.snapshot(result.root.id);
+  assert.equal(redacted.status, "completed_with_tool_calls");
+  assert.equal(redacted.storage, "volatile");
+  assert.equal(redacted.redacted, true);
+  assert.equal("request" in redacted, false);
+  assert.equal("plan" in redacted, false);
+  assert.equal("response" in redacted, false);
   await assert.rejects(() => env.observe.read("/workspace/brief.md"), { code: "EACCES" });
 });
 

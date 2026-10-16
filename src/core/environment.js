@@ -3,6 +3,7 @@ import { normalize } from "../kernel/paths.js";
 import { createRunStore } from "./run-store.js";
 import { toolCatalog } from "./tool-resource.js";
 import { runWorkflow, inspectInvocation } from "./workflow-harness.js";
+import { createRunObserver } from "./run-observer.js";
 
 const VIEW_NAMES = ["agent", "model", "tools", "observer"];
 
@@ -76,6 +77,7 @@ export function createEnvironment({
   model,
   tools = {},
   permissions = {},
+  observerInterval = 100,
 } = {}) {
   if (!resources || typeof resources !== "object") throw fail("resources must be a resource adapter");
   if (!storage || typeof storage !== "object") throw fail("storage must be a resource adapter");
@@ -98,6 +100,9 @@ export function createEnvironment({
   const modelView = createView(resources, { grants: grants(permissions.model, "permissions.model") });
   const toolsView = createView(resources, { grants: grants(permissions.tools, "permissions.tools") });
   const observerView = createView(storage, { grants: grants(permissions.observer, "permissions.observer") });
+  // Keep the low-level resource View available for trusted integrations, and expose a
+  // separate observer facade that only returns redacted RunState metadata.
+  const runObserver = createRunObserver(observerView, { root: runRoot, interval: observerInterval });
   const runStore = store ?? createRunStore(storage, { root: runRoot });
   if (!runStore || typeof runStore.reserve !== "function") throw fail("store must be a RunStore");
 
@@ -177,7 +182,7 @@ export function createEnvironment({
     },
     catalogs: { tools: [...toolPaths] },
     permissions: Object.fromEntries(VIEW_NAMES.map((name) => [name, permissionDescriptions[name]()])),
-    runs: { root: runRoot, storage: "run-store" },
+    runs: { root: runRoot, storage: "run-store", observer: { redacted: true, volatile: true } },
   });
 
   return Object.freeze({
@@ -186,6 +191,7 @@ export function createEnvironment({
     catalog,
     discoverTools,
     observe,
+    observer: runObserver,
     permissions: permissionDescriptions,
     describe,
   });

@@ -269,3 +269,45 @@ test("graph recovery marks a claimed invocation with no readable snapshot unknow
   assert.equal(recovered.status, "unknown");
   assert.equal(recovered.nodes[0].recovery, "process_restart");
 });
+
+test("recovery reconciles a persisted terminal child and its edge after graph commit loss", async () => {
+  const { storage, store } = await setup();
+  let failGraphCommit = false;
+  const graphStorage = {
+    read: storage.read.bind(storage),
+    mkdirp: storage.mkdirp.bind(storage),
+    mkdir: storage.mkdir.bind(storage),
+    exists: storage.exists.bind(storage),
+    rename: storage.rename.bind(storage),
+    remove: storage.remove.bind(storage),
+    async write(path, data, options) {
+      const graphSnapshot = typeof data === "string" ? JSON.parse(data) : null;
+      const childCompleted = graphSnapshot?.nodes?.some((node) => node.kind === "continuation" && node.status === "completed");
+      if (failGraphCommit && childCompleted && path.startsWith("/workflows/edge-recovery/graph.json.tmp-")) {
+        failGraphCommit = false;
+        const error = new Error("simulated process exit during graph commit");
+        error.code = "EIO";
+        throw error;
+      }
+      return storage.write(path, data, options);
+    },
+  };
+  const graph = createWorkflowGraph({ storage: graphStorage, store });
+  const started = await start(graph, rootModel(), "edge-recovery");
+  failGraphCommit = true;
+  await assert.rejects(
+    () => graph.continueBranch(branchOptions(started, "child", rootModel(), "edge-recovery-child")),
+    { code: "EIO" },
+  );
+
+  const restarted = createWorkflowGraph({ storage, store: createRunStore(storage) });
+  const before = await restarted.inspect("edge-recovery");
+  assert.equal(before.nodes.find((node) => node.kind === "continuation").status, "running");
+  assert.equal(before.edges[0].status, "running");
+  assert.equal(before.reconciliation.find(({ key }) => key === "branch:child").persistedStatus, "completed");
+
+  const recovered = await restarted.recover("edge-recovery");
+  assert.equal(recovered.status, "completed");
+  assert.equal(recovered.nodes.find((node) => node.kind === "continuation").status, "completed");
+  assert.equal(recovered.edges[0].status, "completed");
+});
