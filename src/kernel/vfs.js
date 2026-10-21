@@ -8,6 +8,7 @@
 import { VfsError } from "./errors.js";
 import { normalize, relativeTo, join } from "./paths.js";
 import { loadDriver } from "./registry.js";
+import { validateInvokeOptions } from "./invoke-options.js";
 
 /** the options a driver gets beyond its own mount options. `vfs` is here so a driver can
  *  reach *another* mount — which is how the model driver reaches the network, and how a
@@ -316,15 +317,12 @@ export class Vfs {
    * is a file mutation, and a timeout after dispatch must remain the driver's `unknown`
    * outcome rather than becoming a successful write. */
   async invoke(path, input, opts = {}) {
+    validateInvokeOptions(opts);
     const res = this.resolve(path);
-    if (opts.signal?.aborted) throw invocationAbort(opts.signal, res.abs);
-
     const inst = res.mount.instance;
     let stat;
     try {
-      // Use the kernel stat path so synthetic directories created by child mounts are
-      // classified as non-callable too, with the same metadata/error behavior as read.
-      stat = await this.stat(res.abs);
+      stat = await inst.stat(res.rel, this.#ctx(res));
     } catch (e) {
       throw rethrow(e, res.abs, "invoke");
     }
@@ -340,6 +338,13 @@ export class Vfs {
         path: res.abs,
         operation: "invoke",
       });
+    }
+    if (opts.signal?.aborted) {
+      const error = opts.signal.reason instanceof Error
+        ? opts.signal.reason
+        : new VfsError("ABORT_ERR", "resource invocation cancelled", { path: res.abs, operation: "invoke" });
+      if (!error.code) error.code = "ABORT_ERR";
+      throw error;
     }
     try {
       return await inst.invoke(res.rel, input, this.#ctx(res, { signal: opts.signal ?? null }), opts);
@@ -524,20 +529,6 @@ export class Vfs {
 function rethrow(e, abs, op) {
   if (!(e instanceof VfsError)) return e;
   return e.at(abs);
-}
-
-function invocationAbort(signal, path) {
-  const reason = signal.reason;
-  // DOM AbortSignals use a numeric legacy `code` on DOMException. Normalize that
-  // platform detail so every callable sees the runtime's ABORT_ERR shape.
-  if (reason instanceof Error && !(reason.name === "AbortError" && typeof reason.code !== "string")) {
-    if (!reason.code) reason.code = "ABORT_ERR";
-    return reason;
-  }
-  const error = new Error(reason?.message ?? "resource invocation cancelled", { cause: reason });
-  error.name = "AbortError";
-  error.code = "ABORT_ERR";
-  return error;
 }
 
 /** a directory that exists only because a mount lives below it. */

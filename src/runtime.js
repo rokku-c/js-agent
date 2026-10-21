@@ -11,6 +11,7 @@ export { continueOnce, assembleContinuationRequest } from './core/workflow.js';
 
 export { InMemoryConnector, createInMemoryConnector } from "./connectors/in-memory.js";
 export { createServiceAuthority } from "./connectors/service-authority.js";
+export { OfflineEffectConnector, createOfflineEffectConnector } from "./connectors/offline-effect.js";
 export { createGitRevisionConnector } from "./connectors/git-revision.js";
 export { executeToolCalls, inspectInvocation, runWorkflow } from './core/workflow-harness.js';
 export { createEnvironment } from './core/environment.js';

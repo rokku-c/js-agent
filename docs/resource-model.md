@@ -77,8 +77,12 @@ interface InvocationResult {
 ```
 
 A driver may implement these operations with a local file, a remote API, a database query,
-or an in-memory object. The caller does not need to know which implementation is behind the
-path.
+or an in-memory object. The kernel validates and forwards `operationId` and `idempotencyKey`,
+but does not promise exactly-once execution. A connector that supports deduplication should
+retain a receipt/status resource and let the caller reconcile an `unknown` outcome before
+retrying. A connector without deduplication must leave an interrupted outcome `unknown`.
+The caller does not need to know which implementation is behind the path, but it must respect
+the connector's stated reconciliation behavior.
 
 Streaming is represented as an observable resource or an async result with cancellation. It
 must have one protocol everywhere. A network driver and a model driver must not return two

@@ -57,23 +57,6 @@ const DEFAULT_MODELS = {
  *  knows about would refuse to address models the API would happily serve. `%2F` spells the
  *  slash, and an unknown id is passed through to the endpoint, which is the only thing that
  *  actually knows what it serves. */
-function parseInput(input) {
-  if (typeof input === "string") {
-    try {
-      return JSON.parse(input);
-    } catch (cause) {
-      throw new VfsError("EINVAL", "model invocation input is not valid JSON", {
-        operation: "invoke",
-        cause,
-      });
-    }
-  }
-  if (!input || typeof input !== "object" || Array.isArray(input)) {
-    throw new VfsError("EINVAL", "model invocation input must be an object", { operation: "invoke" });
-  }
-  return input;
-}
-
 function decodeModel(seg) {
   try {
     return decodeURIComponent(seg);
@@ -282,7 +265,7 @@ export default defineDriver({
       await requireNet(null);
 
       if (!stream) {
-        const reply = await ctx.vfs.write(netPath, { method: "POST", url, headers, body: JSON.stringify(body) }, { signal, generic: true });
+        const reply = await ctx.vfs.write(netPath, { method: "POST", url, headers, body: JSON.stringify(body) });
         const res = reply.value;
         const err = classify(res.status, res.body, url);
         if (err) throw err;
@@ -532,7 +515,7 @@ export default defineDriver({
         const node = parse(rel);
         if (!node) throw new VfsError("ENOENT", "no such node", { path: "/" + rel });
         if (node.kind !== "model") throw new VfsError("EISDIR", "a directory is not callable", { path: "/" + rel });
-        const canonical = parseInput(input);
+        const canonical = typeof input === "string" ? JSON.parse(input) : input;
         if (canonical?.stream) {
           throw new VfsError("EINVAL", "invoke is one-shot and cannot carry a stream", {
             path: "/" + rel,

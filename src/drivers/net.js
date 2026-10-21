@@ -245,7 +245,7 @@ export default defineDriver({
       return { status: res.status, headers, body: text };
     };
 
-    const run = async (req, { signal, generic = false } = {}) => {
+    const run = async (req, { signal } = {}) => {
       const { url, method } = check(req);
       const full = { ...req, url: url.toString(), method };
       const signal2 = combineSignals(signal, timeoutSignal(req.timeoutMs ?? timeoutMs));
@@ -254,14 +254,6 @@ export default defineDriver({
         res = await active.run(full, { signal: signal2.signal });
       } catch (e) {
         if (e instanceof VfsError) throw e;
-        if (signal?.aborted) throw signalError(signal, "network request cancelled");
-        if (generic && signal2.signal.aborted) {
-          throw new VfsError("ETIMEDOUT", "the network request timed out", {
-            operation: "net",
-            hint: `${method} ${url.origin}${url.pathname} via transport=${transportName}`,
-            cause: e,
-          });
-        }
         throw new VfsError("EIO", `the request failed: ${e.message}`, {
           operation: "net",
           hint: `${method} ${url.origin}${url.pathname} via transport=${transportName}`,
@@ -304,7 +296,6 @@ export default defineDriver({
         }
       } catch (cause) {
         if (cause instanceof VfsError) throw cause;
-        if (signal?.aborted) throw signalError(signal, "network request cancelled");
         throw new VfsError("EIO", `the request failed: ${cause.message}`, {
           operation: "net", cause,
           hint: `${method} ${url.origin}${url.pathname} via transport=${transportName}`,
@@ -379,7 +370,7 @@ export default defineDriver({
       },
 
       /** `write /dev/net/request {…}` → the response. this is the legacy one-shot path. */
-      async write(rel, data, _ctx = {}, opts = {}) {
+      async write(rel, data) {
         if (rel !== "request") {
           throw new VfsError("EACCES", "permission denied", {
             path: "/" + rel,
@@ -388,7 +379,7 @@ export default defineDriver({
           });
         }
         const req = typeof data === "string" ? JSON.parse(data) : data;
-        return run(req, { signal: opts.signal, generic: !!opts.generic });
+        return run(req);
       },
 
       /** Generic callable-resource spelling of the same one-request HTTP operation. */
@@ -400,8 +391,8 @@ export default defineDriver({
             hint: "the request device is /dev/net/request",
           });
         }
-        const req = parseRequest(input, "invoke");
-        return run(req, { signal: ctx.signal ?? opts.signal, generic: true });
+        const req = typeof input === "string" ? JSON.parse(input) : input;
+        return run(req, { signal: ctx.signal ?? opts.signal });
       },
 
       /** `open /dev/net/request r+` → a handle for a conversation, including a streaming
@@ -424,33 +415,6 @@ export default defineDriver({
     };
   },
 });
-
-function parseRequest(input, operation) {
-  let request = input;
-  if (typeof input === "string") {
-    try {
-      request = JSON.parse(input);
-    } catch (cause) {
-      throw new VfsError("EINVAL", "request input is not valid JSON", { operation, cause });
-    }
-  }
-  if (!request || typeof request !== "object" || Array.isArray(request)) {
-    throw new VfsError("EINVAL", "request input must be an object", { operation });
-  }
-  return request;
-}
-
-function signalError(signal, detail) {
-  const reason = signal.reason;
-  if (reason instanceof Error && !(reason.name === "AbortError" && typeof reason.code !== "string")) {
-    if (!reason.code) reason.code = "ABORT_ERR";
-    return reason;
-  }
-  const error = new Error(reason?.message ?? detail, { cause: reason });
-  error.name = "AbortError";
-  error.code = "ABORT_ERR";
-  return error;
-}
 
 /** an AbortSignal that fires after `ms`. `AbortSignal.timeout` is the ES2024 spelling and
  *  does exactly this; it is wrapped so a caller that passes its own signal can compose. */

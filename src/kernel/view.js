@@ -3,6 +3,7 @@
 // driver-defined effects (including recursive remove and directory rename).
 import { VfsError } from "./errors.js";
 import { normalize, resolvePath } from "./paths.js";
+import { validateInvokeOptions } from "./invoke-options.js";
 
 const operations = new Set(["stat", "list", "read", "write", "invoke", "mkdir", "remove", "rename", "watch"]);
 // Private policy data only: neither a facade nor its description exposes resources.
@@ -94,7 +95,14 @@ export function createView(resources, { grants = [] } = {}) {
     stat: dispatch("stat"),
     read: dispatch("read"),
     write: dispatch("write"),
-    invoke: dispatch("invoke"),
+    async invoke(path, input, options = {}) {
+      const abs = check("invoke", path);
+      validateInvokeOptions(options);
+      if (typeof resources.invoke !== "function") {
+        throw new VfsError("ENOTSUP", `resource does not implement invoke`, { path: abs, operation: "invoke" });
+      }
+      return resources.invoke(abs, input, options);
+    },
     async remove(path, ...args) {
       const abs = check("remove", path);
       const opts = args[0] ?? {};

@@ -42,7 +42,7 @@ function adapterFor(adapters, name) {
   return adapters?.[name];
 }
 
-async function executeOne(toolCall, adapters, { signal, trace, runId } = {}) {
+async function executeOne(toolCall, adapters, { signal, trace, runId, operationId: operationPrefix, idempotencyKey: keyPrefix } = {}) {
   const toolUseId = toolCall?.id;
   const name = toolCall?.name;
   if (typeof toolUseId !== "string" || toolUseId.length === 0) {
@@ -60,11 +60,18 @@ async function executeOne(toolCall, adapters, { signal, trace, runId } = {}) {
     if (typeof adapter !== "function") {
       throw fail(`no trusted adapter supplied for tool ${name}`, "ENOENT");
     }
+    // A tool call is the retry unit. Reusing the same run and tool-use id produces the
+    // same identities after a timeout or process recovery; the connector decides whether
+    // that identity is deduplicated. This is a delivery contract, not exactly-once.
+    const operationId = operationPrefix ?? `${runId ?? "tool"}:${toolUseId}`;
+    const idempotencyKey = keyPrefix ?? operationId;
     const value = await adapter({
       input: toolCall.input ?? {},
       signal,
       toolCall,
       runId,
+      operationId,
+      idempotencyKey,
     });
     throwIfAborted(signal);
     trace?.push({ event: "tool_finished", runId, toolUseId, name, ok: true, ms: Date.now() - started });
@@ -85,9 +92,9 @@ async function executeOne(toolCall, adapters, { signal, trace, runId } = {}) {
 export async function executeToolCalls(toolCalls, adapters, options = {}) {
   if (!Array.isArray(toolCalls)) throw fail("toolCalls must be an array");
   object(adapters, "tool adapters");
-  const { signal, trace, runId } = options;
+  const { signal, trace, runId, operationId, idempotencyKey } = options;
   const settled = await Promise.allSettled(
-    toolCalls.map((toolCall) => executeOne(toolCall, adapters, { signal, trace, runId })),
+    toolCalls.map((toolCall) => executeOne(toolCall, adapters, { signal, trace, runId, operationId, idempotencyKey })),
   );
   const cancellation = abortError(signal) ?? settled.find((item) => item.status === "rejected" && (
     item.reason?.code === "ABORT_ERR" || item.reason?.name === "AbortError"
