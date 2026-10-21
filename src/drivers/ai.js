@@ -510,6 +510,25 @@ export default defineDriver({
         return exchange(node.dialect, node.vendor, node.model, canonical, { stream: false });
       },
 
+      /** Generic callable-resource spelling for one model request. */
+      async invoke(rel, input, ctx = {}, opts = {}) {
+        const node = parse(rel);
+        if (!node) throw new VfsError("ENOENT", "no such node", { path: "/" + rel });
+        if (node.kind !== "model") throw new VfsError("EISDIR", "a directory is not callable", { path: "/" + rel });
+        const canonical = typeof input === "string" ? JSON.parse(input) : input;
+        if (canonical?.stream) {
+          throw new VfsError("EINVAL", "invoke is one-shot and cannot carry a stream", {
+            path: "/" + rel,
+            operation: "invoke",
+            hint: "use open(path, 'r+') for streaming",
+          });
+        }
+        return exchange(node.dialect, node.vendor, node.model, canonical, {
+          stream: false,
+          signal: ctx.signal ?? opts.signal,
+        });
+      },
+
       async open(rel, flags) {
         const node = parse(rel);
         if (!node) throw new VfsError("ENOENT", "no such node", { path: "/" + rel });

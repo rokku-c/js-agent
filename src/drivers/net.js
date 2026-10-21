@@ -369,7 +369,7 @@ export default defineDriver({
         throw new VfsError("EISDIR", "is a directory", { path: "/" + rel });
       },
 
-      /** `write /dev/net/request {…}` → the response. this is the one-shot path. */
+      /** `write /dev/net/request {…}` → the response. this is the legacy one-shot path. */
       async write(rel, data) {
         if (rel !== "request") {
           throw new VfsError("EACCES", "permission denied", {
@@ -380,6 +380,19 @@ export default defineDriver({
         }
         const req = typeof data === "string" ? JSON.parse(data) : data;
         return run(req);
+      },
+
+      /** Generic callable-resource spelling of the same one-request HTTP operation. */
+      async invoke(rel, input, ctx = {}, opts = {}) {
+        if (rel !== "request") {
+          throw new VfsError("EACCES", "permission denied", {
+            path: "/" + rel,
+            operation: "invoke",
+            hint: "the request device is /dev/net/request",
+          });
+        }
+        const req = typeof input === "string" ? JSON.parse(input) : input;
+        return run(req, { signal: ctx.signal ?? opts.signal });
       },
 
       /** `open /dev/net/request r+` → a handle for a conversation, including a streaming

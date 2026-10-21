@@ -4,7 +4,7 @@
 import { VfsError } from "./errors.js";
 import { normalize, resolvePath } from "./paths.js";
 
-const operations = new Set(["stat", "list", "read", "write", "mkdir", "remove", "rename", "watch"]);
+const operations = new Set(["stat", "list", "read", "write", "invoke", "mkdir", "remove", "rename", "watch"]);
 // Private policy data only: neither a facade nor its description exposes resources.
 const policies = new WeakMap();
 
@@ -59,8 +59,9 @@ function intersect(child, parent) {
  * exists requires stat. mkdirp requires stat and mkdir on every non-root
  * ancestor it touches, preflighted before any effect; even existing ancestors
  * must be authorized. mkdir({recursive:true}) follows the same checks.
- * abs is pure path arithmetic and confers no authority. No open/invoke or driver
- * handles are exposed. Options (including signals) pass to the resource API;
+ * abs is pure path arithmetic and confers no authority. No open or driver handles are
+ * exposed. Options (including signals) pass to the resource API; invoke is a one-request
+ * callable-resource operation and is authorized separately from write.
  * actual support/cancellation depends on that API and its drivers.
  */
 export function createView(resources, { grants = [] } = {}) {
@@ -81,12 +82,19 @@ export function createView(resources, { grants = [] } = {}) {
     }
     return abs;
   };
-  const dispatch = (op) => async (path, ...args) => resources[op](check(op, path), ...args);
+  const dispatch = (op) => async (path, ...args) => {
+    const abs = check(op, path);
+    if (typeof resources[op] !== "function") {
+      throw new VfsError("ENOTSUP", `resource does not implement ${op}`, { path: abs, operation: op });
+    }
+    return resources[op](abs, ...args);
+  };
 
   const facade = Object.freeze({
     stat: dispatch("stat"),
     read: dispatch("read"),
     write: dispatch("write"),
+    invoke: dispatch("invoke"),
     async remove(path, ...args) {
       const abs = check("remove", path);
       const opts = args[0] ?? {};

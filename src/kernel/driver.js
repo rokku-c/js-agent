@@ -30,7 +30,7 @@ import { VfsError } from "./errors.js";
 
 /** the operations a driver may implement. `stat`, `list` and `read` are the floor
  *  something must stand on to be a filesystem at all; the rest degrade honestly. */
-const METHODS = ["stat", "list", "read", "write", "mkdir", "remove", "rename", "sync", "open", "unmount"];
+const METHODS = ["stat", "list", "read", "write", "invoke", "mkdir", "remove", "rename", "sync", "open", "unmount"];
 
 /** mark a module as a driver, checking the contract at load time rather than at the
  *  first call. a driver missing `read` should fail when it is imported, not three

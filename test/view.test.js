@@ -111,7 +111,7 @@ test("view: forwards resource arguments and exposes no driver or handle escape",
   assert.equal(view.resolve, undefined);
   assert.equal(view.mount, undefined);
   assert.equal(view.open, undefined);
-  assert.equal(view.invoke, undefined);
+  assert.equal(typeof view.invoke, "function");
   assert.equal(view.vfs, undefined);
 });
 

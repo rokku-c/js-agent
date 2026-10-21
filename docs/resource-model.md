@@ -62,6 +62,18 @@ Callable resources additionally expose:
 interface CallableResource {
   invoke(path: Path, input: unknown, options?: InvokeOptions): Promise<InvocationResult>;
 }
+
+interface InvokeOptions {
+  signal?: AbortSignal;
+  operationId?: string;
+  idempotencyKey?: string;
+}
+
+interface InvocationResult {
+  status: "completed" | "failed" | "cancelled" | "unknown";
+  value?: unknown;
+  effect?: { id: string; state: "started" | "completed" | "failed" | "cancelled" | "unknown" };
+}
 ```
 
 A driver may implement these operations with a local file, a remote API, a database query,

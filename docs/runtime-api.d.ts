@@ -17,6 +17,7 @@ export interface ResourceAdapter {
   list(path: string, options?: unknown): Promise<ResourceEntry[]>;
   read(path: string, options?: unknown): Promise<string>;
   write(path: string, data: unknown, options?: unknown): Promise<unknown>;
+  invoke?(path: string, input: unknown, options?: { signal?: AbortSignal; [key: string]: unknown }): Promise<unknown>;
   mkdir?(path: string, options?: unknown): Promise<unknown>;
   mkdirp?(path: string, options?: unknown): Promise<unknown>;
   remove?(path: string, options?: unknown): Promise<unknown>;
@@ -35,10 +36,11 @@ export interface WorkflowGraphStorage extends ResourceAdapter {
 
 export interface Grant {
   path: string;
-  operations: Array<"stat" | "list" | "read" | "write" | "mkdir" | "remove" | "rename" | "watch">;
+  operations: Array<"stat" | "list" | "read" | "write" | "invoke" | "mkdir" | "remove" | "rename" | "watch">;
 }
 
 export interface ResourceView extends ResourceAdapter {
+  invoke(path: string, input: unknown, options?: { signal?: AbortSignal; [key: string]: unknown }): Promise<unknown>;
   readonly root?: string;
   derive(options?: { grants?: Grant[] }): ResourceView;
   describe(): { grants: Grant[] };

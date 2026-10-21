@@ -198,6 +198,13 @@ test("ai: the tree is the path the design promised", async () => {
   assert.deepEqual((await vfs.list("/dev/providers/ai/type/api/fake/messages/model")).map((e) => e.name), ["fake-1"]);
 });
 
+test("ai: a model is also a generic one-request callable resource", async () => {
+  const vfs = await namespace({ mounts: [FAKE] });
+  const result = await vfs.invoke(MODEL, { messages: [{ role: "user", content: "call" }] });
+  assert.equal(result.content[0].type, "text");
+  assert.match(result.content[0].text, /heard 1 messages/);
+});
+
 test("ai: reading a model is free and offline, and never the token", async () => {
   const vfs = await namespace({ mounts: [FAKE] });
   const d = JSON.parse(await vfs.read(MODEL));

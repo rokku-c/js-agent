@@ -310,6 +310,47 @@ export class Vfs {
     return typeof data === "string" ? data : new TextDecoder().decode(data);
   }
 
+  /** Invoke a callable resource exactly once. The driver receives the caller signal through
+   * its scoped context and owns any external-effect journal. `invoke` is deliberately kept
+   * separate from `write`: a request device may accept structured input without pretending it
+   * is a file mutation, and a timeout after dispatch must remain the driver's `unknown`
+   * outcome rather than becoming a successful write. */
+  async invoke(path, input, opts = {}) {
+    const res = this.resolve(path);
+    const inst = res.mount.instance;
+    let stat;
+    try {
+      stat = await inst.stat(res.rel, this.#ctx(res));
+    } catch (e) {
+      throw rethrow(e, res.abs, "invoke");
+    }
+    if (!stat?.callable) {
+      throw new VfsError("ENOTSUP", "resource is not callable", {
+        path: res.abs,
+        operation: "invoke",
+        hint: "invoke a resource whose stat reports callable=true",
+      });
+    }
+    if (typeof inst.invoke !== "function") {
+      throw new VfsError("ENOTSUP", "this resource has no invoke operation", {
+        path: res.abs,
+        operation: "invoke",
+      });
+    }
+    if (opts.signal?.aborted) {
+      const error = opts.signal.reason instanceof Error
+        ? opts.signal.reason
+        : new VfsError("ABORT_ERR", "resource invocation cancelled", { path: res.abs, operation: "invoke" });
+      if (!error.code) error.code = "ABORT_ERR";
+      throw error;
+    }
+    try {
+      return await inst.invoke(res.rel, input, this.#ctx(res, { signal: opts.signal ?? null }), opts);
+    } catch (e) {
+      throw rethrow(e, res.abs, "invoke");
+    }
+  }
+
   /**
    * @param {string} path
    * @param {string|Uint8Array|object} data
