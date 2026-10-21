@@ -40,10 +40,12 @@ Pinned references still mean “the current bytes match this SHA-256” rather t
 old provider revision.” The connector has no historical store. AgentSpec currently rejects an
 authored `view` or `revision` field, and `invokeOnce` still receives the trusted model adapter
 and selected tool catalog from the host. Tool definitions are metadata only; entrypoints are
-not executed. Callable external resources and a generic `invoke` operation are not covered by
-this prototype because the current JavaScript View does not expose `invoke`.
+not executed. Callable external resources are now supported through the generic `invoke` operation. A
+connector must report `callable: true` and implement `invoke`; the caller View must grant
+`invoke` separately from `read` and `write`. The operation receives cancellation through its
+scoped context, while effect identity and reconciliation remain connector-owned.
 
-The result supports external observable resources through the existing file/reference model,
-with `watch` as the one missing generic View capability filled in by this change. The remaining
-limitations are documented protocol gaps rather than reasons to add SSH, Notion, or cloud
-special cases.
+The result supports external observable and callable resources through the same
+file/reference/invoke model, with `watch` and `invoke` as generic View capabilities. Real
+transport, authentication, retries, rate limits, and historical provider revisions remain
+connector-owned concerns rather than provider-specific Agent APIs.
