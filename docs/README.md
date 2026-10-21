@@ -19,12 +19,13 @@ For implemented APIs and current limitations, start with [Implementation status]
 
 1. [Getting started](./getting-started.md) — a complete offline application using the public exports.
 2. [Architecture](./architecture.md) — the layered system and its boundaries.
-3. [Resource Model](./resource-model.md) — resources, drivers, namespaces, views, and references.
-4. [Execution Model](./execution-model.md) — agent definitions, invocations, context resolution, tools, and observable state.
-5. [Runtime and Connectors](./runtime-and-connectors.md) — JavaScript composition, host adapters, remote resources, and applications.
-6. [Versioning and Self-Modification](./versioning.md) — Git worktrees, revisions, environment changes, and activation.
-7. [Protocols and Examples](./protocols.md) — compact schemas, complete flows, and conformance scenarios.
-8. [Appendix](./appendix.md) — definitions, glossary, design principles, invariants, and open decisions.
+3. [Legacy and runtime compatibility](./legacy-runtime-compat.md) — verified differences between the CLI loop and the runtime APIs.
+4. [Resource Model](./resource-model.md) — resources, drivers, namespaces, views, and references.
+5. [Execution Model](./execution-model.md) — agent definitions, invocations, context resolution, tools, and observable state.
+6. [Runtime and Connectors](./runtime-and-connectors.md) — JavaScript composition, host adapters, remote resources, and applications.
+7. [Versioning and Self-Modification](./versioning.md) — Git worktrees, revisions, environment changes, and activation.
+8. [Protocols and Examples](./protocols.md) — compact schemas, complete flows, and conformance scenarios.
+9. [Appendix](./appendix.md) — definitions, glossary, design principles, invariants, and open decisions.
 
 ## The four public concepts
 

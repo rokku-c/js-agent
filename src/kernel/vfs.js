@@ -397,7 +397,7 @@ export class Vfs {
   /**
    * @param {string} path
    * @param {string|Uint8Array|object} data
-   * @param {{create?: boolean, append?: boolean}} [opts]
+   * @param {{create?: boolean, append?: boolean, signal?: AbortSignal}} [opts]
    * @returns {Promise<{bytes: number|null, value?: any}>} `value` is a device's reply —
    *   present only when writing to something `stat` reported as `callable`.
    */
@@ -431,7 +431,7 @@ export class Vfs {
     }
 
     try {
-      const r = await res.mount.instance.write(res.rel, data, this.#ctx(res), opts);
+      const r = await res.mount.instance.write(res.rel, data, this.#ctx(res, { signal: opts.signal ?? null }), opts);
       // a driver may return a byte count (a file) or a reply (a device). normalise the
       // former so callers can rely on `.bytes`; leave the latter's `value` intact.
       if (r == null) return { bytes: null, value: undefined };
