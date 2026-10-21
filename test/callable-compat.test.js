@@ -38,10 +38,24 @@ test("invoke is a clean ENOTSUP across legacy non-callable drivers", async () =>
       await rejectsCode(() => vfs.invoke(resource, {}), expected);
     }
 
+    // Adding a generic operation must not change the old open surface: these are files or
+    // read-only catalogs, so their drivers still reject open rather than manufacturing a
+    // handle. open intentionally probes the driver's legacy operation and does not stat first.
+    for (const resource of [
+      "/host/plain.txt",
+      "/proc/mounts",
+      "/secrets/TOKEN",
+      "/bin/read",
+    ]) {
+      await rejectsCode(() => vfs.open(resource), "ENOTSUP");
+    }
+
     // Device stats historically mark byte devices as devices; only callable resources with
     // an invoke method can use the generic protocol.
     await rejectsCode(() => vfs.invoke("/dev/null", {}), "ENOTSUP", /not callable/);
     await rejectsCode(() => vfs.invoke("/dev/zero", {}), "ENOTSUP", /no invoke operation/);
+    await rejectsCode(() => vfs.open("/dev/null"), "ENOTSUP");
+    await rejectsCode(() => vfs.open("/dev/zero"), "ENOTSUP");
   } finally {
     await host.cleanup();
   }
@@ -50,6 +64,7 @@ test("invoke is a clean ENOTSUP across legacy non-callable drivers", async () =>
 test("Vfs and View preserve callable authority, forwarding, and pre-abort behavior", async () => {
   const vfs = new Vfs();
   await vfs.mount("mem", "/");
+  await vfs.write("/plain", "descriptor", { create: true });
   await vfs.write("/callable", "descriptor", { create: true });
   const instance = vfs.resolve("/callable").mount.instance;
   const seen = [];
@@ -60,7 +75,8 @@ test("Vfs and View preserve callable authority, forwarding, and pre-abort behavi
   };
 
   const controller = new AbortController();
-  controller.abort();
+  controller.abort(new DOMException("cancelled", "AbortError"));
+  await rejectsCode(() => vfs.invoke("/plain", {}, { signal: controller.signal }), "ABORT_ERR");
   await rejectsCode(() => vfs.invoke("/callable", {}, { signal: controller.signal }), "ABORT_ERR");
   assert.equal(seen.length, 0, "pre-abort must not dispatch the callable");
 
@@ -76,6 +92,12 @@ test("Vfs and View preserve callable authority, forwarding, and pre-abort behavi
   assert.deepEqual(await view.invoke("/callable", { value: 2 }), { ok: true });
   const readOnly = createView(vfs, { grants: [{ path: "/callable", operations: ["stat", "read"] }] });
   await rejectsCode(() => readOnly.invoke("/callable", {}), "EACCES");
+
+  // A directory synthesized solely by a child mount is still a non-callable resource.
+  const synthetic = new Vfs();
+  await synthetic.mount("mem", "/");
+  await synthetic.mount("mem", "/mounted/child");
+  await rejectsCode(() => synthetic.invoke("/mounted", {}), "ENOTSUP", /not callable/);
 });
 
 test("net and AI callable paths preserve legacy write behavior and cancellation", async (t) => {
@@ -86,6 +108,8 @@ test("net and AI callable paths preserve legacy write behavior and cancellation"
 
   await rejectsCode(() => vfs.invoke("/dev/net/request", "not-json"), "EINVAL", /not valid JSON/);
   await rejectsCode(() => vfs.invoke(MODEL, "not-json"), "EINVAL", /not valid JSON/);
+  await rejectsCode(() => vfs.invoke("/dev/net/request", []), "EINVAL", /must be an object/);
+  await rejectsCode(() => vfs.invoke(MODEL, []), "EINVAL", /must be an object/);
 
   let requestSignal = null;
   let block = false;
@@ -99,6 +123,11 @@ test("net and AI callable paths preserve legacy write behavior and cancellation"
 
   const network = await vfs.invoke("/dev/net/request", { method: "GET", url: "https://fixture.invalid/ok" });
   assert.equal(network.body, "network-ok");
+  const legacyNetwork = await vfs.write("/dev/net/request", { method: "GET", url: "https://fixture.invalid/legacy" });
+  assert.equal(legacyNetwork.value.body, "network-ok");
+  const networkHandle = await vfs.open("/dev/net/request", "r+");
+  assert.equal(networkHandle.node, "/dev/net/request");
+  await networkHandle.close();
   block = true;
   const controller = new AbortController();
   const pending = vfs.invoke(MODEL, { messages: [{ role: "user", content: "cancel" }] }, { signal: controller.signal });
@@ -113,6 +142,13 @@ test("net and AI callable paths preserve legacy write behavior and cancellation"
     messages: [{ role: "user", content: "legacy" }],
   });
   assert.equal(write.value.content[0].type, "text");
+  const invoked = await local.invoke("/local/type/api/fake/messages/model/fake-1", {
+    messages: [{ role: "user", content: "generic" }],
+  });
+  assert.equal(invoked.content[0].type, "text");
+  const modelHandle = await local.open("/local/type/api/fake/messages/model/fake-1", "r+");
+  await modelHandle.send({ messages: [{ role: "user", content: "handle" }] });
+  await modelHandle.close();
 });
 
 test("public declarations describe callable resource and service authority APIs", async () => {

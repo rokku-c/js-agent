@@ -8,12 +8,12 @@ The generic `Vfs.invoke(path, input, options)` and `View.invoke(...)` protocol i
 
 | Surface | Result | Compatibility evidence |
 | --- | --- | --- |
-| `mem` files | pass | plain files reject `invoke` with `ENOTSUP`; normal file writes still use `create` and byte semantics |
-| `hostfs` files | pass | mounted host files reject `invoke`; read-only and read/write behavior remains unchanged |
-| `proc`, `secret`, and `bin` | pass | metadata/configuration files reject `invoke` cleanly |
-| `/dev` | pass | `/dev/null` is non-callable; callable device metadata without an implementation reports `ENOTSUP` |
-| `net:/dev/net/request` | pass | generic invocation returns the response; malformed input is `EINVAL`; caller cancellation remains `ABORT_ERR` |
-| `ai` model nodes | pass | fake model invocation works; malformed input is `EINVAL`; network-backed cancellation reaches the net driver |
+| `mem` files | pass | missing paths retain `ENOENT`, plain files reject `invoke` with `ENOTSUP`, and synthetic mount directories are non-callable |
+| `hostfs` files | pass | mounted host files reject `invoke` and `open`; read-only behavior remains unchanged |
+| `proc`, `secret`, and `bin` | pass | metadata/configuration files reject `invoke` and `open` cleanly |
+| `/dev` | pass | `/dev/null` is non-callable; callable device metadata without an implementation reports `ENOTSUP`; byte-device behavior remains unchanged |
+| `net:/dev/net/request` | pass | generic invocation, legacy response-valued `write`, and `r+` `open` work; malformed input is `EINVAL`; caller cancellation remains `ABORT_ERR` |
+| `ai` model nodes | pass | fake local invocation, legacy `write`, and conversation `open` work; malformed input is `EINVAL`; network-backed cancellation reaches the net driver |
 | `View` | pass | `invoke` is separately authorized, arguments/options are forwarded, and derived views cannot widen it |
 | service authority | pass | existing public authority tests verify exact grants, delegation intersection, handler errors, and signal forwarding |
 | public typed API | pass | declarations include optional adapter `invoke`, required view `invoke`, the `invoke` grant operation, and service `call` |
@@ -33,10 +33,14 @@ The offline callable example performs an aborted job submission and a successful
 
 Validation completed in this checkout:
 
-- `npm test`: 277 passed, 0 failed.
-- Focused callable compatibility tests: 4 passed.
-- All 19 `examples/*.js` programs: exit 0.
-- Both `examples/*.sh` programs: exit 0.
+- `npm test`: 281 passed, 0 failed.
+- `node --test test/callable-compat.test.js`: 4 passed.
+- `node examples/real-use-callable.js`: exit 0; aborted effect is `unknown`, workflow effect is `completed`.
+- `node examples/connector-service-authority.js`: exit 0; model grant is `model.request`, tool service grant is empty.
+
+The compatibility coverage is in `test/callable-compat.test.js`; the test manifest includes it in
+`npm test`. The audit also cross-checks the existing service-authority and public API declaration
+suites rather than duplicating their handler and type-system cases.
 
 ## Limitations
 
