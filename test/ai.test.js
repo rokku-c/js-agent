@@ -198,6 +198,26 @@ test("ai: the tree is the path the design promised", async () => {
   assert.deepEqual((await vfs.list("/dev/providers/ai/type/api/fake/messages/model")).map((e) => e.name), ["fake-1"]);
 });
 
+test("ai: a narrowed namespace cannot borrow credential or network mounts", async () => {
+  const vfs = await namespace({
+    mounts: [
+      "secret:/dev/secrets,values=API_TOKEN=private",
+      "net:/dev/net,allow=api.anthropic.com",
+      "ai:/dev/providers/ai,vendor=anthropic,token-file=/dev/secrets/API_TOKEN",
+    ],
+  });
+  const child = vfs.narrow(["/dev/providers/ai"]);
+  const descriptor = JSON.parse(await child.read(
+    "/dev/providers/ai/type/api/anthropic/messages/model/claude-opus-5"
+  ));
+  assert.equal(descriptor.auth_present, false);
+  assert.equal(descriptor.net_mounted, false);
+  await assert.rejects(
+    () => child.invoke("/dev/providers/ai/type/api/anthropic/messages/model/claude-opus-5", { messages: [] }),
+    { code: "EACCES" },
+  );
+});
+
 test("ai: a model is also a generic one-request callable resource", async () => {
   const vfs = await namespace({ mounts: [FAKE] });
   const result = await vfs.invoke(MODEL, { messages: [{ role: "user", content: "call" }] });

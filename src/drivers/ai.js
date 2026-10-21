@@ -69,7 +69,7 @@ export default defineDriver({
   name: "ai",
   description: "model providers as a file tree — options: vendor, token-file, net, models",
 
-  async mount(options, ctx) {
+  async mount(options) {
     const vendors = String(options.vendor ?? "anthropic")
       .split(",")
       .map((s) => s.trim())
@@ -107,7 +107,7 @@ export default defineDriver({
     // resolved at *request* time, not at mount time. that is what makes the mount order
     // free — `mount ai` before `mount secret` works — and what makes a rotated secret take
     // effect without a re-mount.
-    const readToken = async () => {
+    const readToken = async (vfs) => {
       if (options.token) return String(options.token);
       if (options["token-env"]) {
         const name = String(options["token-env"]);
@@ -123,7 +123,7 @@ export default defineDriver({
       if (options["token-file"]) {
         const path = String(options["token-file"]);
         try {
-          return String(await ctx.vfs.read(path)).trim();
+          return String(await vfs.read(path)).trim();
         } catch (e) {
           throw new VfsError("EACCES", `cannot read the credential at ${path}`, {
             operation: "auth",
@@ -150,19 +150,19 @@ export default defineDriver({
     // where it gets re-labelled with the model file's path. the caller then reads "file not
     // found: /dev/providers/…/claude-opus-5", which is true of nothing and actionable for
     // no one. asking first turns it into the sentence it should have been.
-    const requireNet = async (flags) => {
+    const requireNet = async (vfs, flags) => {
       const missing = new VfsError("ENETDOWN", `the ai driver has no transport at ${netPath}`, {
         operation: "net",
         hint: `mount one: mount net:${netPath.split("/").slice(0, -1).join("/")},allow=<host>`,
       });
       try {
-        await ctx.vfs.stat(netPath);
+        await vfs.stat(netPath);
       } catch {
         throw missing;
       }
       if (!flags) return null;
       try {
-        return await ctx.vfs.open(netPath, flags);
+        return await vfs.open(netPath, flags);
       } catch (e) {
         if (e.code === "ENOENT" || e.code === "ENOTDIR" || e.code === "ENOTSUP") throw missing;
         throw e;
@@ -227,9 +227,9 @@ export default defineDriver({
       return responders.get(dialect.vendor);
     };
 
-    const exchange = async (dialect, vendor, model, canonical, { signal, onEvent, stream }) => {
+    const exchange = async (dialect, vendor, model, canonical, { signal, onEvent, stream, vfs }) => {
       signal?.throwIfAborted();
-      const token = dialect.local ? null : await readToken();
+      const token = dialect.local ? null : await readToken(vfs);
       if (!dialect.local && !token) {
         throw new VfsError("EACCES", "no credential is configured for this provider", {
           operation: "auth",
@@ -262,10 +262,10 @@ export default defineDriver({
 
       const body = dialect.body(canonical, { model, stream });
       const headers = dialect.headers(token);
-      await requireNet(null);
+      await requireNet(vfs, null);
 
       if (!stream) {
-        const reply = await ctx.vfs.write(netPath, { method: "POST", url, headers, body: JSON.stringify(body) });
+        const reply = await vfs.write(netPath, { method: "POST", url, headers, body: JSON.stringify(body) });
         const res = reply.value;
         const err = classify(res.status, res.body, url);
         if (err) throw err;
@@ -283,7 +283,7 @@ export default defineDriver({
       }
 
       // ── streaming ──
-      const handle = await requireNet("r+");
+      const handle = await requireNet(vfs, "r+");
       try {
         const chunks = handle.stream({ method: "POST", url, headers, body: JSON.stringify(body) }, { signal });
         // the first item is the head, because the caller has to know a non-200 arrived
@@ -340,13 +340,13 @@ export default defineDriver({
       return { kind: "model", vendor, dialect, model: decodeModel(segs.slice(5).join("/")) };
     };
 
-    const describe = async (node) => {
+    const describe = async (node, vfs) => {
       const dialect = node.dialect;
-      const token = dialect.local ? null : await readToken().catch(() => null);
+      const token = dialect.local ? null : await readToken(vfs).catch(() => null);
       // everything here is a presence check, never a probe. "network available" means the
       // net device is mounted, not that a connection succeeded — a `read` that could block
       // or fail would defeat the whole read-is-cheap/write-expensive split
-      const netMounted = await ctx.vfs.exists(netPath).catch(() => false);
+      const netMounted = await vfs.exists(netPath).catch(() => false);
       const configured = modelsFor(node.vendor);
       return {
         vendor: node.vendor,
@@ -370,7 +370,7 @@ export default defineDriver({
       };
     };
 
-    const openHandle = (node) => {
+    const openHandle = (node, vfs) => {
       const messages = [];
       let inFlight = false;
       const lifetime = new AbortController();
@@ -418,7 +418,7 @@ export default defineDriver({
           const done = guard();
           try {
             const req = build(canonical);
-            const res = await exchange(node.dialect, node.vendor, node.model, req, { ...opts, stream: false });
+            const res = await exchange(node.dialect, node.vendor, node.model, req, { ...opts, stream: false, vfs });
             // the whole turn goes in at once — every tool_result for one assistant round
             // belongs in a single user message, and a handle that let them arrive one at a
             // time would build a transcript the API rejects
@@ -434,7 +434,7 @@ export default defineDriver({
           try {
             const req = build(canonical);
             const signal = opts.signal ? AbortSignal.any([opts.signal, lifetime.signal]) : lifetime.signal;
-            const res = await exchange(node.dialect, node.vendor, node.model, req, { ...opts, signal, stream: true });
+            const res = await exchange(node.dialect, node.vendor, node.model, req, { ...opts, signal, stream: true, vfs });
             messages.push(...(canonical.messages ?? []));
             messages.push({ role: "assistant", content: res.content ?? [] });
             return res;
@@ -484,17 +484,17 @@ export default defineDriver({
         return node.list.map((n) => entry(n, dirStat()));
       },
 
-      async read(rel) {
+      async read(rel, ctx = {}) {
         const node = parse(rel);
         if (!node) throw new VfsError("ENOENT", "no such node", { path: "/" + rel });
         if (node.kind === "dir") throw new VfsError("EISDIR", "is a directory", { path: "/" + rel });
-        return JSON.stringify(await describe(node), null, 2) + "\n";
+        return JSON.stringify(await describe(node, ctx.vfs), null, 2) + "\n";
       },
 
       /** one-shot: the request goes in, the response comes back as the write's value.
        *  a stream cannot be carried by a write, so asking for one here is refused rather
        *  than answered with something the caller cannot read. */
-      async write(rel, data) {
+      async write(rel, data, ctx = {}) {
         const node = parse(rel);
         if (!node) throw new VfsError("ENOENT", "no such node", { path: "/" + rel });
         if (node.kind !== "model") throw new VfsError("EISDIR", "is a directory", { path: "/" + rel });
@@ -507,7 +507,7 @@ export default defineDriver({
             hint: "open the node instead: `open(path, 'r+')` then `.stream(request)`. streaming is the handle's job because a write has one return value and a stream has many.",
           });
         }
-        return exchange(node.dialect, node.vendor, node.model, canonical, { stream: false });
+        return exchange(node.dialect, node.vendor, node.model, canonical, { stream: false, vfs: ctx.vfs });
       },
 
       /** Generic callable-resource spelling for one model request. */
@@ -526,14 +526,15 @@ export default defineDriver({
         return exchange(node.dialect, node.vendor, node.model, canonical, {
           stream: false,
           signal: ctx.signal ?? opts.signal,
+          vfs: ctx.vfs,
         });
       },
 
-      async open(rel, flags) {
+      async open(rel, flags, ctx = {}) {
         const node = parse(rel);
         if (!node) throw new VfsError("ENOENT", "no such node", { path: "/" + rel });
         if (node.kind !== "model") throw new VfsError("EISDIR", "is a directory", { path: "/" + rel });
-        return openHandle(node);
+        return openHandle(node, ctx.vfs);
       },
     };
   },

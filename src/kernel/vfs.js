@@ -10,6 +10,25 @@ import { normalize, relativeTo, join } from "./paths.js";
 import { loadDriver } from "./registry.js";
 import { validateInvokeOptions } from "./invoke-options.js";
 
+const REDACTED = "[redacted]";
+const SENSITIVE_MOUNT_OPTIONS = new Set([
+  "token",
+  "values",
+  "password",
+  "secret",
+  "credential",
+  "authorization",
+  "api-key",
+  "api_key",
+  "apikey",
+]);
+
+function publicMountOptions(options) {
+  return Object.fromEntries(Object.entries(options).map(([key, value]) => [
+    key, SENSITIVE_MOUNT_OPTIONS.has(key.toLowerCase()) ? REDACTED : value,
+  ]));
+}
+
 /** the options a driver gets beyond its own mount options. `vfs` is here so a driver can
  *  reach *another* mount — which is how the model driver reaches the network, and how a
  *  credential mounted as a file is read. a driver that reaches around this is reaching
@@ -29,9 +48,12 @@ export class Vfs {
   #mounts = [];
   /** @type {Array<(ev: {kind: string, at: string, driver: string}) => void>} */
   #watchers = [];
+  #mounting = new Set();
+  #canMount;
 
-  constructor({ log } = {}) {
+  constructor({ log, allowMount = true } = {}) {
     this.log = log ?? (() => {});
+    this.#canMount = allowMount;
   }
 
   // ── the mount table ────────────────────────────────────────────────────────────
@@ -42,8 +64,14 @@ export class Vfs {
    * @param {object} [options]   driver-specific; see each driver's own header
    */
   async mount(driverName, at, options = {}) {
+    if (!this.#canMount) {
+      throw new VfsError("EACCES", "this namespace cannot add mounts", {
+        path: normalize(at),
+        operation: "mount",
+      });
+    }
     const where = normalize(at);
-    if (this.#mounts.some((m) => m.at === where)) {
+    if (this.#mounts.some((m) => m.at === where) || this.#mounting.has(where)) {
       throw new VfsError("EBUSY", `something is already mounted at ${where}`, {
         path: where,
         operation: "mount",
@@ -51,6 +79,10 @@ export class Vfs {
       });
     }
 
+    // Reserve the mount point before either await below. Otherwise two concurrent mounts
+    // can both pass the duplicate check and leave two authorities at the same path.
+    this.#mounting.add(where);
+    try {
     // the registry is the only place a driver module is loaded, and it loads on demand.
     // that is what makes "the network is not reachable unless mounted" a structural fact
     // rather than a promise: nothing imports the net driver until someone mounts it.
@@ -70,9 +102,18 @@ export class Vfs {
     this.#mounts.sort((a, b) => b.at.length - a.at.length);
     this.#notify("mount", entry);
     return entry;
+    } finally {
+      this.#mounting.delete(where);
+    }
   }
 
   async umount(at) {
+    if (!this.#canMount) {
+      throw new VfsError("EACCES", "this namespace cannot remove mounts", {
+        path: normalize(at),
+        operation: "umount",
+      });
+    }
     const where = normalize(at);
     const i = this.#mounts.findIndex((m) => m.at === where);
     if (i < 0) {
@@ -92,7 +133,7 @@ export class Vfs {
     return this.#mounts.map((m) => ({
       at: m.at,
       driver: m.driver,
-      options: { ...m.options },
+      options: publicMountOptions(m.options),
     }));
   }
 
@@ -144,7 +185,7 @@ export class Vfs {
   /** keep only the mounts under these prefixes. `["/host"]` gives a child the host
    *  filesystem and nothing else — no /bin, no /dev/providers, no /agent. */
   narrow(keep) {
-    const view = new Vfs({ log: this.log });
+    const view = new Vfs({ log: this.log, allowMount: false });
     view.#mounts = this.#mounts
       .filter((m) => keep.some((k) => m.at === normalize(k) || m.at.startsWith(normalize(k) + "/")))
       .map((m) => ({ ...m, options: { ...m.options } }));

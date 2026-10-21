@@ -64,6 +64,43 @@ test("vfs: an intermediate directory is synthesised from the mount below it", as
   assert.equal((await vfs.stat("/dev/providers")).type, "dir");
 });
 
+test("vfs: concurrent mounts reserve one mount point", async () => {
+  const vfs = await namespace();
+  const results = await Promise.allSettled([
+    vfs.mount("mem", "/race", {}),
+    vfs.mount("mem", "/race", {}),
+  ]);
+  assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+  assert.equal(results.filter((result) => result.status === "rejected")[0].reason.code, "EBUSY");
+  assert.equal(vfs.mounts().filter((mount) => mount.at === "/race").length, 1);
+});
+
+test("vfs: narrowed namespaces cannot mutate the mount table", async () => {
+  const vfs = await namespace();
+  await vfs.mount("mem", "/shared", {});
+  const child = vfs.narrow(["/shared"]);
+
+  await assert.rejects(() => child.mount("mem", "/escape", {}), { code: "EACCES" });
+  await assert.rejects(() => child.umount("/shared"), { code: "EACCES" });
+  assert.deepEqual(child.mounts().map((mount) => mount.at), ["/shared"]);
+  assert.equal(await vfs.exists("/shared"), true);
+});
+
+test("vfs: mount descriptions redact credential-bearing options", async () => {
+  const vfs = await namespace({
+    mounts: [
+      "secret:/dev/secrets,values=API_TOKEN=do-not-disclose",
+      "ai:/dev/providers/ai,vendor=fake,token=also-do-not-disclose",
+    ],
+  });
+  const mounts = JSON.stringify(vfs.mounts());
+  const proc = await vfs.read("/proc/mounts");
+  assert.doesNotMatch(mounts, /do-not-disclose/);
+  assert.doesNotMatch(proc, /do-not-disclose/);
+  assert.match(mounts, /\[redacted\]/);
+  assert.match(proc, /\[redacted\]/);
+});
+
 test("vfs: mounting twice is refused, and umount makes room", async () => {
   const vfs = await namespace();
   await assert.rejects(() => vfs.mount("mem", "/", {}), /EBUSY/);
